@@ -52,16 +52,6 @@ class PlayerRow:
     has_wo: bool
     winner_marker: bool
 
-
-@dataclass
-class MatchRow:
-    round_code: str
-    player_a: str
-    player_b: str
-    winner: str
-    participant_a_score: str
-    participant_b_score: str
-
 def is_walkover_without_numeric_scores(player_a: PlayerRow, player_b: PlayerRow) -> bool:
     return (
         not player_a.score_values
@@ -71,6 +61,15 @@ def is_walkover_without_numeric_scores(player_a: PlayerRow, player_b: PlayerRow)
             or (player_b.winner_marker and not player_a.winner_marker)
         )
     )
+
+@dataclass
+class MatchRow:
+    round_code: str
+    player_a: str
+    player_b: str
+    winner: str
+    participant_a_score: str
+    participant_b_score: str
 
 def fetch_html(url: str) -> str:
     response = requests.get(url, headers=HEADERS, timeout=30)
