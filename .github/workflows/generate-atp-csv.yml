@@ -46,7 +46,7 @@ jobs:
           echo "CSV trovato correttamente"
 
       - name: Upload CSV as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.0
         with:
           name: atp-full-draw-csv
           path: indian_wells_full_draw.csv
