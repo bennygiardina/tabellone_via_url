@@ -390,26 +390,40 @@ def convert_raw_score_to_csv_scores(
     raw_score: str,
     winner_is_a: bool,
 ) -> Tuple[str, str]:
+    """
+    ATP esprime lo score dal punto di vista del vincitore.
+    Quindi i set letti sono:
+    - sinistra = set vinti dal vincitore
+    - destra = set vinti dallo sconfitto
+
+    Poi li rimappiamo su Participant A / Participant B
+    in base a chi è il winner del match.
+    """
     sets_found, has_ret, has_wo = parse_score_tokens(raw_score)
 
     if has_wo:
         return ("W/O", "") if winner_is_a else ("", "W/O")
 
-    a_sets = 0
-    b_sets = 0
+    winner_sets = 0
+    loser_sets = 0
 
-    for a_games, b_games in sets_found:
-        if not is_complete_set(a_games, b_games):
+    for left_games, right_games in sets_found:
+        if not is_complete_set(left_games, right_games):
             continue
-        if a_games > b_games:
-            a_sets += 1
-        elif b_games > a_games:
-            b_sets += 1
+
+        if left_games > right_games:
+            winner_sets += 1
+        elif right_games > left_games:
+            loser_sets += 1
 
     if has_ret:
-        return (str(a_sets), f"(rit.) {b_sets}") if winner_is_a else (f"(rit.) {a_sets}", str(b_sets))
+        if winner_is_a:
+            return str(winner_sets), f"(rit.) {loser_sets}"
+        return f"(rit.) {loser_sets}", str(winner_sets)
 
-    return str(a_sets), str(b_sets)
+    if winner_is_a:
+        return str(winner_sets), str(loser_sets)
+    return str(loser_sets), str(winner_sets)
 
 
 def extract_result_chunks(results_html: str) -> List[ResultChunk]:
