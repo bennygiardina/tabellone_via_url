@@ -62,6 +62,15 @@ class MatchRow:
     participant_a_score: str
     participant_b_score: str
 
+def is_walkover_without_numeric_scores(player_a: PlayerRow, player_b: PlayerRow) -> bool:
+    return (
+        not player_a.score_values
+        and not player_b.score_values
+        and (
+            (player_a.winner_marker and not player_b.winner_marker)
+            or (player_b.winner_marker and not player_a.winner_marker)
+        )
+    )
 
 def fetch_html(url: str) -> str:
     response = requests.get(url, headers=HEADERS, timeout=30)
@@ -355,30 +364,18 @@ def determine_winner(
 
 
 def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: PlayerRow) -> MatchRow:
-    # bye
-    if player_a.display_name == "bye" and player_b.display_name != "bye":
-        return MatchRow(
-            round_code=round_code,
-            player_a=player_a.display_name,
-            player_b=player_b.display_name,
-            winner=player_b.display_name,
-            participant_a_score="",
-            participant_b_score="",
-        )
+    # entrambi vuoti -> scarta
+    if player_a.display_name == "" and player_b.display_name == "":
+        return None
 
-    if player_b.display_name == "bye" and player_a.display_name != "bye":
-        return MatchRow(
-            round_code=round_code,
-            player_a=player_a.display_name,
-            player_b=player_b.display_name,
-            winner=player_a.display_name,
-            participant_a_score="",
-            participant_b_score="",
-        )
+    # se uno solo ha nome, scarta
+    if player_a.display_name == "" or player_b.display_name == "":
+        return None
 
-    # walkover senza game
-    if (player_a.has_wo or player_b.has_wo) and not player_a.score_values and not player_b.score_values:
-        if player_a.winner_marker and not player_b.winner_marker:
+    # walkover senza game:
+    # nessun punteggio numerico + un solo winner marker
+    if is_walkover_without_numeric_scores(player_a, player_b):
+        if player_a.winner_marker:
             return MatchRow(
                 round_code=round_code,
                 player_a=player_a.display_name,
@@ -387,68 +384,42 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
                 participant_a_score="W/O",
                 participant_b_score="",
             )
-        if player_b.winner_marker and not player_a.winner_marker:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=player_b.display_name,
-                participant_a_score="",
-                participant_b_score="W/O",
-            )
 
-    a_sets, b_sets = count_complete_sets(player_a.score_values, player_b.score_values)
-    winner = determine_winner(player_a, player_b, a_sets, b_sets)
-
-    # Ritiro
-    has_ret = player_a.has_ret or player_b.has_ret
-    if has_ret:
-        if winner == player_a.display_name:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=winner,
-                participant_a_score=str(a_sets),
-                participant_b_score=f"(rit.) {b_sets}",
-            )
-        if winner == player_b.display_name:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=winner,
-                participant_a_score=f"(rit.) {a_sets}",
-                participant_b_score=str(b_sets),
-            )
-
-    # Walkover anche senza marker esplicito: se non ci sono punteggi completi ma c'è un winner
-    if (player_a.has_wo or player_b.has_wo) and winner:
-        if winner == player_a.display_name:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=winner,
-                participant_a_score="W/O",
-                participant_b_score="",
-            )
         return MatchRow(
             round_code=round_code,
             player_a=player_a.display_name,
             player_b=player_b.display_name,
-            winner=winner,
+            winner=player_b.display_name,
             participant_a_score="",
             participant_b_score="W/O",
         )
+
+    # caso normale con punteggi
+    a_scores = player_a.score_values
+    b_scores = player_b.score_values
+
+    max_len = max(len(a_scores), len(b_scores))
+    a_scores = a_scores + [""] * (max_len - len(a_scores))
+    b_scores = b_scores + [""] * (max_len - len(b_scores))
+
+    a_score_str = " ".join(str(x) for x in a_scores if x != "")
+    b_score_str = " ".join(str(x) for x in b_scores if x != "")
+
+    # determina il vincitore
+    if player_a.winner_marker and not player_b.winner_marker:
+        winner = player_a.display_name
+    elif player_b.winner_marker and not player_a.winner_marker:
+        winner = player_b.display_name
+    else:
+        winner = ""
 
     return MatchRow(
         round_code=round_code,
         player_a=player_a.display_name,
         player_b=player_b.display_name,
         winner=winner,
-        participant_a_score=str(a_sets) if winner else "",
-        participant_b_score=str(b_sets) if winner else "",
+        participant_a_score=a_score_str,
+        participant_b_score=b_score_str,
     )
 
 
