@@ -3,7 +3,7 @@ name: Update Indian Wells Matches CSV (No PDF)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"   # ogni 5 minuti
+    - cron: "*/5 * * * *"
 
 jobs:
   update-csv:
@@ -17,6 +17,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: List repository files
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 2 -type f | sort
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -34,7 +40,7 @@ jobs:
 
       - name: Run script (debug)
         run: |
-          python update_indian_wells_matches_csv_no_pdf_clean.py \
+          python update_indian_wells_matches_csv_no_pdf.py \
             --output data/indian_wells_matches.csv \
             --debug
 
