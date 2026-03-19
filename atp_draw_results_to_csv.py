@@ -62,6 +62,8 @@ class MatchRow:
 @dataclass
 class ResultMatch:
     round_label: str
+    player1_full_name: str
+    player2_full_name: str
     winner_full_name: str
     raw_score: str
     is_walkover: bool
@@ -275,8 +277,11 @@ def available_round_codes(draw_html: str, first_round_code: str) -> List[str]:
 
 def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
     """
-    Legge la pagina results come testo lineare e costruisce una lista di match per round.
-    L'assunzione è che l'ordine dei match nei results coincida con l'ordine nel draw.
+    Costruisce match dei results per round.
+    Ogni match viene identificato da:
+    - 2 giocatori completi
+    - winner
+    - score grezzo
     """
     soup = BeautifulSoup(results_html, "html.parser")
     text = soup.get_text("\n", strip=True)
@@ -291,11 +296,27 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
 
     def flush_block() -> None:
         nonlocal current_round, current_block
+
         if not current_round or not current_block:
             current_block = []
             return
 
         block_text = "\n".join(current_block)
+
+        # Cerca i due giocatori nella forma:
+        # "First Last" su linee consecutive nel blocco
+        candidate_player_lines = []
+        for line in current_block:
+            if re.match(r"^[A-Z][a-zA-Z'`\-\.]+(?:\s+[A-Z][a-zA-Z'`\-\.]+)+$", line):
+                candidate_player_lines.append(line)
+
+        player1_full_name = ""
+        player2_full_name = ""
+
+        # In molti blocchi ATP i primi due nomi completi sono i due giocatori
+        if len(candidate_player_lines) >= 2:
+            player1_full_name = candidate_player_lines[0]
+            player2_full_name = candidate_player_lines[1]
 
         winner_match = re.search(r"Game Set and Match\s+(.+?)\.", block_text, flags=re.I)
         walkover_match = re.search(r"Winner:\s*(.+?)\s+by\s+Walkover", block_text, flags=re.I)
@@ -320,10 +341,12 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
             raw_score = "W/O"
             is_walkover = True
 
-        if winner_full_name:
+        if winner_full_name and player1_full_name and player2_full_name:
             results_by_round[current_round].append(
                 ResultMatch(
                     round_label=current_round,
+                    player1_full_name=player1_full_name,
+                    player2_full_name=player2_full_name,
                     winner_full_name=winner_full_name,
                     raw_score=raw_score,
                     is_walkover=is_walkover,
@@ -403,6 +426,49 @@ def winner_matches_player(winner_full_name: str, player_display_name: str) -> bo
 
     return tokens[0][0].lower() == initial
 
+def normalize_for_matching(name: str) -> str:
+    return normalize_space(name).lower()
+
+
+def surname_key_from_display_name(name: str) -> str:
+    base = remove_labels(name)
+    parts = base.split()
+    if not parts:
+        return ""
+
+    # Shimabukuro S.
+    if len(parts) == 2 and parts[-1].endswith("."):
+        return parts[0].lower()
+
+    # B. van de Zandschulp
+    if parts[0].endswith("."):
+        return " ".join(parts[1:]).lower()
+
+    return parts[-1].lower()
+
+
+def surname_key_from_full_name(name: str) -> str:
+    parts = normalize_space(name).split()
+    if not parts:
+        return ""
+
+    if len(parts) == 1:
+        return parts[0].lower()
+
+    return " ".join(parts[1:]).lower()
+
+
+def result_match_matches_row(result_match: ResultMatch, row: MatchRow) -> bool:
+    row_surnames = {
+        surname_key_from_display_name(row.player_a),
+        surname_key_from_display_name(row.player_b),
+    }
+    result_surnames = {
+        surname_key_from_full_name(result_match.player1_full_name),
+        surname_key_from_full_name(result_match.player2_full_name),
+    }
+    return row_surnames == result_surnames
+    
 
 def parse_score_tokens(raw_score: str) -> Tuple[List[Tuple[int, int]], bool, bool]:
     text = normalize_space(raw_score)
