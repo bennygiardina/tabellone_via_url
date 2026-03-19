@@ -3,7 +3,7 @@ name: Update Indian Wells Matches CSV (No PDF)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"   # ogni 5 minuti
 
 jobs:
   update-csv:
@@ -34,7 +34,7 @@ jobs:
 
       - name: Run script (debug)
         run: |
-          python update_indian_wells_matches_csv_no_pdf.py \
+          python update_indian_wells_matches_csv_no_pdf_clean.py \
             --output data/indian_wells_matches.csv \
             --debug
 
