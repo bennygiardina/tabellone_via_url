@@ -419,13 +419,13 @@ def extract_result_chunks(results_html: str) -> List[ResultChunk]:
     lines = [normalize_space(line) for line in text.splitlines()]
     lines = [line for line in lines if line]
 
-    result_round_labels = list(DRAW_TO_RESULTS_ROUND.values())
+    round_labels = list(DRAW_TO_RESULTS_ROUND.values())
     chunks: List[ResultChunk] = []
 
     current_round: Optional[str] = None
     current_lines: List[str] = []
 
-    def flush_current_chunk() -> None:
+    def flush_chunk() -> None:
         nonlocal current_round, current_lines, chunks
         if current_round and current_lines:
             chunk_text = "\n".join(current_lines).strip()
@@ -434,34 +434,27 @@ def extract_result_chunks(results_html: str) -> List[ResultChunk]:
         current_lines = []
 
     for line in lines:
-        # nuovo round
         matched_round = None
-        for round_label in result_round_labels:
-            if line.startswith(f"{round_label} -"):
-                flush_current_chunk()
-                current_round = round_label
-                current_lines = [line]
+        for round_label in round_labels:
+            # es. "Round of 64 - Stadium 1 01:04:51"
+            if line.startswith(round_label):
                 matched_round = round_label
                 break
 
         if matched_round:
-            continue
-
-        if not current_round:
-            continue
-
-        # nuovo match dentro lo stesso round
-        if (
-            "Game Set and Match" in line
-            or line.startswith("Winner:")
-        ):
-            flush_current_chunk()
+            flush_chunk()
+            current_round = matched_round
             current_lines = [line]
             continue
 
-        current_lines.append(line)
+        # ignora i giorni, ma non chiudere il chunk
+        if re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),", line):
+            continue
 
-    flush_current_chunk()
+        if current_round:
+            current_lines.append(line)
+
+    flush_chunk()
     return chunks
 
 
@@ -512,13 +505,16 @@ def winner_from_chunk_for_row(chunk_text: str, player_a: str, player_b: str) -> 
 
 
 def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChunk]) -> List[MatchRow]:
-    target_round = DRAW_TO_RESULTS_ROUND[rows[0].round_code] if rows else ""
+    if not rows:
+        return rows
 
+    target_round = DRAW_TO_RESULTS_ROUND[rows[0].round_code]
     round_chunks = [chunk for chunk in result_chunks if chunk.round_label == target_round]
     used_chunk_indexes = set()
 
-    # Primo passaggio: match esatto / fallback cognomi
+    # 1) matching esatto / fallback cognomi
     for row in rows:
+        # bye già gestito
         if row.player_a == "bye" or row.player_b == "bye":
             continue
 
@@ -554,7 +550,7 @@ def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChu
         row.participant_b_score = score_b
         used_chunk_indexes.add(chosen_idx)
 
-    # Secondo passaggio: fallback per posizione nel round
+    # 2) fallback per posizione nel round
     unmatched_rows = [
         row for row in rows
         if not row.winner and row.player_a != "bye" and row.player_b != "bye"
@@ -566,8 +562,6 @@ def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChu
 
     for row, (idx, chunk) in zip(unmatched_rows, remaining_chunks):
         winner = winner_from_chunk_for_row(chunk.text, row.player_a, row.player_b)
-
-        # fallback ulteriore: se non riconosce il winner dal testo, usa la prima/seconda regex
         if not winner:
             winner_text = build_winner_regex_from_chunk(chunk.text)
             if winner_text:
