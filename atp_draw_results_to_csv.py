@@ -420,35 +420,48 @@ def extract_result_chunks(results_html: str) -> List[ResultChunk]:
     lines = [line for line in lines if line]
 
     result_round_labels = list(DRAW_TO_RESULTS_ROUND.values())
-
     chunks: List[ResultChunk] = []
+
     current_round: Optional[str] = None
     current_lines: List[str] = []
 
-    def flush_current() -> None:
+    def flush_current_chunk() -> None:
         nonlocal current_round, current_lines, chunks
         if current_round and current_lines:
-            chunks.append(ResultChunk(round_label=current_round, text="\n".join(current_lines)))
-        current_round = None
+            chunk_text = "\n".join(current_lines).strip()
+            if chunk_text:
+                chunks.append(ResultChunk(round_label=current_round, text=chunk_text))
         current_lines = []
 
     for line in lines:
+        # nuovo round
         matched_round = None
         for round_label in result_round_labels:
             if line.startswith(f"{round_label} -"):
+                flush_current_chunk()
+                current_round = round_label
+                current_lines = [line]
                 matched_round = round_label
                 break
 
         if matched_round:
-            flush_current()
-            current_round = matched_round
+            continue
+
+        if not current_round:
+            continue
+
+        # nuovo match dentro lo stesso round
+        if (
+            "Game Set and Match" in line
+            or line.startswith("Winner:")
+        ):
+            flush_current_chunk()
             current_lines = [line]
             continue
 
-        if current_round:
-            current_lines.append(line)
+        current_lines.append(line)
 
-    flush_current()
+    flush_current_chunk()
     return chunks
 
 
@@ -499,31 +512,35 @@ def winner_from_chunk_for_row(chunk_text: str, player_a: str, player_b: str) -> 
 
 
 def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChunk]) -> List[MatchRow]:
+    target_round = DRAW_TO_RESULTS_ROUND[rows[0].round_code] if rows else ""
+
+    round_chunks = [chunk for chunk in result_chunks if chunk.round_label == target_round]
+    used_chunk_indexes = set()
+
+    # Primo passaggio: match esatto / fallback cognomi
     for row in rows:
-        # bye già gestito
-        if row.winner and row.player_a == "bye" or row.player_b == "bye":
+        if row.player_a == "bye" or row.player_b == "bye":
             continue
 
-        target_round = DRAW_TO_RESULTS_ROUND[row.round_code]
+        exact_idx = None
+        fallback_idx = None
 
-        exact_chunk = None
-        fallback_chunk = None
-
-        for chunk in result_chunks:
-            if chunk.round_label != target_round:
+        for idx, chunk in enumerate(round_chunks):
+            if idx in used_chunk_indexes:
                 continue
 
             if chunk_matches_players(chunk.text, row.player_a, row.player_b):
-                exact_chunk = chunk
+                exact_idx = idx
                 break
 
-            if fallback_chunk is None and chunk_matches_players_fallback(chunk.text, row.player_a, row.player_b):
-                fallback_chunk = chunk
+            if fallback_idx is None and chunk_matches_players_fallback(chunk.text, row.player_a, row.player_b):
+                fallback_idx = idx
 
-        chosen_chunk = exact_chunk or fallback_chunk
-        if not chosen_chunk:
+        chosen_idx = exact_idx if exact_idx is not None else fallback_idx
+        if chosen_idx is None:
             continue
 
+        chosen_chunk = round_chunks[chosen_idx]
         winner = winner_from_chunk_for_row(chosen_chunk.text, row.player_a, row.player_b)
         if not winner:
             continue
@@ -535,17 +552,59 @@ def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChu
         row.winner = winner
         row.participant_a_score = score_a
         row.participant_b_score = score_b
+        used_chunk_indexes.add(chosen_idx)
+
+    # Secondo passaggio: fallback per posizione nel round
+    unmatched_rows = [
+        row for row in rows
+        if not row.winner and row.player_a != "bye" and row.player_b != "bye"
+    ]
+    remaining_chunks = [
+        (idx, chunk) for idx, chunk in enumerate(round_chunks)
+        if idx not in used_chunk_indexes
+    ]
+
+    for row, (idx, chunk) in zip(unmatched_rows, remaining_chunks):
+        winner = winner_from_chunk_for_row(chunk.text, row.player_a, row.player_b)
+
+        # fallback ulteriore: se non riconosce il winner dal testo, usa la prima/seconda regex
+        if not winner:
+            winner_text = build_winner_regex_from_chunk(chunk.text)
+            if winner_text:
+                lowered = winner_text.lower()
+                _, surname_a = split_name_for_matching(row.player_a)
+                _, surname_b = split_name_for_matching(row.player_b)
+
+                if surname_a and surname_a in lowered:
+                    winner = row.player_a
+                elif surname_b and surname_b in lowered:
+                    winner = row.player_b
+
+        if not winner:
+            continue
+
+        raw_score = extract_score_from_chunk(chunk.text)
+        winner_is_a = winner == row.player_a
+        score_a, score_b = convert_raw_score_to_csv_scores(raw_score, winner_is_a)
+
+        row.winner = winner
+        row.participant_a_score = score_a
+        row.participant_b_score = score_b
+        used_chunk_indexes.add(idx)
 
     return rows
 
 
 def winners_to_entrants(rows: List[MatchRow]) -> List[Entrant]:
-    winners: List[Entrant] = []
-    for row in rows:
-        if not row.winner:
-            raise ValueError(f"Manca il winner nel turno {row.round_code}: {row.player_a} vs {row.player_b}")
-        winners.append(Entrant(display_name=row.winner))
-    return winners
+    missing = [
+        f"{row.round_code}: {row.player_a} vs {row.player_b}"
+        for row in rows
+        if not row.winner
+    ]
+    if missing:
+        raise ValueError("Manca il winner per questi match: " + " | ".join(missing))
+
+    return [Entrant(display_name=row.winner) for row in rows]
 
 
 def next_round_code(current_round_code: str) -> Optional[str]:
