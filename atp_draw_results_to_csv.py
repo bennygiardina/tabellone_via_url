@@ -323,6 +323,17 @@ def count_complete_sets(a_scores: List[int], b_scores: List[int]) -> Tuple[int, 
 
     return a_sets, b_sets
 
+def has_incomplete_final_set(a_scores: List[int], b_scores: List[int]) -> bool:
+    if not a_scores or not b_scores:
+        return False
+
+    if len(a_scores) != len(b_scores):
+        return False
+
+    last_a = a_scores[-1]
+    last_b = b_scores[-1]
+
+    return not is_complete_set(last_a, last_b)
 
 def determine_winner(
     player_a: PlayerRow,
@@ -376,14 +387,8 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
             participant_b_score="",
         )
 
-    # walkover senza game:
-    # vale solo se NESSUNO dei due è bye
-    if (
-        player_a.display_name != "bye"
-        and player_b.display_name != "bye"
-        and not player_a.score_values
-        and not player_b.score_values
-    ):
+    # walkover senza game
+    if (player_a.has_wo or player_b.has_wo) and not player_a.score_values and not player_b.score_values:
         if player_a.winner_marker and not player_b.winner_marker:
             return MatchRow(
                 round_code=round_code,
@@ -406,7 +411,33 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
     a_sets, b_sets = count_complete_sets(player_a.score_values, player_b.score_values)
     winner = determine_winner(player_a, player_b, a_sets, b_sets)
 
-    # Ritiro
+    # ritiro dedotto:
+    # ultimo set incompleto + winner marker
+    if (
+        player_a.display_name != "bye"
+        and player_b.display_name != "bye"
+        and has_incomplete_final_set(player_a.score_values, player_b.score_values)
+    ):
+        if player_a.winner_marker and not player_b.winner_marker:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=player_a.display_name,
+                participant_a_score=str(a_sets),
+                participant_b_score=f"(rit.) {b_sets}",
+            )
+        if player_b.winner_marker and not player_a.winner_marker:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=player_b.display_name,
+                participant_a_score=f"(rit.) {a_sets}",
+                participant_b_score=str(b_sets),
+            )
+
+    # ritiro con label esplicita RET nel testo
     has_ret = player_a.has_ret or player_b.has_ret
     if has_ret:
         if winner == player_a.display_name:
@@ -428,13 +459,8 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
                 participant_b_score=str(b_sets),
             )
 
-    # Walkover con label esplicita nel testo
-    if (
-        player_a.display_name != "bye"
-        and player_b.display_name != "bye"
-        and (player_a.has_wo or player_b.has_wo)
-        and winner
-    ):
+    # walkover anche senza marker esplicito: se non ci sono punteggi completi ma c'è un winner
+    if (player_a.has_wo or player_b.has_wo) and winner:
         if winner == player_a.display_name:
             return MatchRow(
                 round_code=round_code,
