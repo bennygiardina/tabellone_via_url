@@ -6,16 +6,12 @@ on:
 jobs:
   generate-csv:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-
-      - name: Show repository files
-        run: |
-          pwd
-          ls -la
-          find . -maxdepth 2 -type f | sort
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -24,20 +20,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -V
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
       - name: Run script
         run: |
           python atp_draw_results_to_csv.py
-          echo "----- AFTER SCRIPT -----"
-          pwd
           ls -la
           find . -maxdepth 2 -type f | sort
 
-      - name: Upload generated CSV
-        uses: actions/upload-artifact@v4
-        with:
-          name: atp-csv-output
-          path: indian_wells_up_to_r64.csv
+      - name: Commit generated CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add indian_wells_up_to_r64.csv
+          git commit -m "Add generated ATP CSV" || echo "No changes to commit"
+          git push
