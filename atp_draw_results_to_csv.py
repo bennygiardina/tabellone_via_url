@@ -388,17 +388,16 @@ def split_name_parts(name: str) -> Tuple[str, str]:
 
 
 def winner_matches_player(winner_full_name: str, player_display_name: str) -> bool:
-    winner_lower = winner_full_name.lower()
+    winner_lower = canonical_text(winner_full_name)
     initial, surname = split_name_parts(player_display_name)
 
-    if not initial or not surname:
+    if not initial:
         return False
 
-    if surname not in winner_lower:
+    surname_candidates = surname_candidates_from_display_name(player_display_name)
+    if not any(canonical_text(cand) in winner_lower for cand in surname_candidates if cand):
         return False
 
-    # Nome completo nei results: es. "Grigor Dimitrov"
-    # Accettiamo se compare il cognome e il nome inizia con la stessa iniziale.
     tokens = winner_full_name.split()
     if not tokens:
         return False
@@ -434,16 +433,81 @@ def display_name_to_regex(name: str) -> Optional[re.Pattern[str]]:
 
     return None
 
+def canonical_text(text: str) -> str:
+    text = text.lower()
+    text = text.replace("’", "'")
+    text = re.sub(r"[^a-z0-9\s']", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def surname_candidates_from_display_name(name: str) -> List[str]:
+    """
+    Restituisce candidati utili per cercare il giocatore nei results.
+    Esempi:
+    - 'J. Cerundolo' -> ['cerundolo']
+    - 'B. van de Zandschulp' -> ['van de zandschulp', 'zandschulp']
+    - 'Shimabukuro S.' -> ['shimabukuro']
+    - "C. O'Connell [Q]" -> ["o'connell", "oconnell"]
+    """
+    base = remove_labels(name)
+    parts = base.split()
+    if not parts:
+        return []
+
+    candidates = []
+
+    # formato invertito: "Shimabukuro S."
+    if len(parts) == 2 and parts[-1].endswith("."):
+        surname = parts[0].lower()
+        candidates.append(surname)
+    # formato standard: "J. Cerundolo" / "B. van de Zandschulp"
+    elif parts[0].endswith("."):
+        surname = " ".join(parts[1:]).lower()
+        candidates.append(surname)
+
+        surname_parts = parts[1:]
+        if len(surname_parts) > 1:
+            candidates.append(surname_parts[-1].lower())
+    else:
+        surname = parts[-1].lower()
+        candidates.append(surname)
+
+    extra = []
+    for c in candidates:
+        extra.append(c.replace("'", ""))
+    candidates.extend(extra)
+
+    # dedup preservando ordine
+    return list(dict.fromkeys(candidates))
+
+
+def surname_block_matches_row(result_match: ResultMatch, row: MatchRow) -> bool:
+    text = canonical_text(result_match.block_text)
+
+    a_candidates = surname_candidates_from_display_name(row.player_a)
+    b_candidates = surname_candidates_from_display_name(row.player_b)
+
+    a_ok = any(canonical_text(cand) in text for cand in a_candidates if cand)
+    b_ok = any(canonical_text(cand) in text for cand in b_candidates if cand)
+
+    return a_ok and b_ok
 
 def result_block_matches_row(result_match: ResultMatch, row: MatchRow) -> bool:
     regex_a = display_name_to_regex(row.player_a)
     regex_b = display_name_to_regex(row.player_b)
 
-    if not regex_a or not regex_b:
-        return False
-
     text = result_match.block_text
-    return bool(regex_a.search(text) and regex_b.search(text))    
+
+    # 1) tentativo principale: regex iniziale + cognome
+    if regex_a and regex_b and regex_a.search(text) and regex_b.search(text):
+        return True
+
+    # 2) fallback: cognomi dentro il blocco
+    if surname_block_matches_row(result_match, row):
+        return True
+
+    return False   
 
 def normalize_for_matching(name: str) -> str:
     return normalize_space(name).lower()
