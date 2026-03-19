@@ -3,7 +3,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Pattern, Tuple
+from typing import List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup, Tag
@@ -214,8 +214,6 @@ def extract_first_round_entrants(draw_html: str) -> Tuple[str, List[Entrant]]:
         display_name = build_display_name(stats_item)
         if display_name is None:
             continue
-
-        # Scarta solo slot davvero privi di nome.
         if display_name == "":
             continue
 
@@ -272,24 +270,19 @@ def remove_labels_and_parens(name: str) -> str:
 
 
 def split_name_for_matching(name: str) -> Tuple[str, str]:
-    """
-    Restituisce:
-    - initial
-    - surname
-    """
     name = remove_labels_and_parens(name)
     if not name:
         return "", ""
 
     parts = name.split()
 
-    # Formato invertito: "Tseng C."
+    # Formato invertito: "Shimabukuro S."
     if len(parts) == 2 and parts[-1].endswith("."):
         initial = parts[-1][0].lower()
         surname = parts[0].lower()
         return initial, surname
 
-    # Formato draw standard: "B. van de Zandschulp"
+    # Formato standard draw: "B. van de Zandschulp"
     if parts[0].endswith("."):
         initial = parts[0][0].lower()
         surname = " ".join(parts[1:]).lower()
@@ -312,7 +305,7 @@ def split_name_for_matching(name: str) -> Tuple[str, str]:
     return initial, surname
 
 
-def build_player_regex(display_name: str) -> Optional[Pattern[str]]:
+def build_player_regex(display_name: str) -> Optional[re.Pattern[str]]:
     base = remove_labels_and_parens(display_name)
     lowered = base.lower()
 
@@ -391,13 +384,7 @@ def convert_raw_score_to_csv_scores(
     winner_is_a: bool,
 ) -> Tuple[str, str]:
     """
-    ATP esprime lo score dal punto di vista del vincitore.
-    Quindi i set letti sono:
-    - sinistra = set vinti dal vincitore
-    - destra = set vinti dallo sconfitto
-
-    Poi li rimappiamo su Participant A / Participant B
-    in base a chi è il winner del match.
+    ATP mostra lo score dal punto di vista del vincitore.
     """
     sets_found, has_ret, has_wo = parse_score_tokens(raw_score)
 
@@ -499,7 +486,6 @@ def winner_from_chunk_for_row(chunk_text: str, player_a: str, player_b: str) -> 
     if regex_b and regex_b.search(winner_text):
         return player_b
 
-    # fallback cognome
     _, surname_a = split_name_for_matching(player_a)
     _, surname_b = split_name_for_matching(player_b)
 
@@ -514,8 +500,8 @@ def winner_from_chunk_for_row(chunk_text: str, player_a: str, player_b: str) -> 
 
 def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChunk]) -> List[MatchRow]:
     for row in rows:
-        # bye già completato
-        if row.winner and "W/O" not in row.participant_a_score and "W/O" not in row.participant_b_score:
+        # bye già gestito
+        if row.winner and row.player_a == "bye" or row.player_b == "bye":
             continue
 
         target_round = DRAW_TO_RESULTS_ROUND[row.round_code]
@@ -562,8 +548,10 @@ def winners_to_entrants(rows: List[MatchRow]) -> List[Entrant]:
     return winners
 
 
-def next_round_code(current_round_code: str) -> str:
+def next_round_code(current_round_code: str) -> Optional[str]:
     idx = ROUND_CODES_IN_ORDER.index(current_round_code)
+    if idx + 1 >= len(ROUND_CODES_IN_ORDER):
+        return None
     return ROUND_CODES_IN_ORDER[idx + 1]
 
 
@@ -589,23 +577,28 @@ def export_csv(rows: List[MatchRow], output_path: str) -> None:
             ])
 
 
-def build_tournament_csv_up_to_r64(draw_url: str, results_url: str, output_csv: str) -> None:
+def build_full_tournament_csv(draw_url: str, results_url: str, output_csv: str) -> None:
     draw_html = fetch_html(draw_url)
     results_html = fetch_html(results_url)
 
-    first_round_code, first_round_entrants = extract_first_round_entrants(draw_html)
-    first_round_rows = pair_entrants(first_round_code, first_round_entrants)
-
+    first_round_code, current_entrants = extract_first_round_entrants(draw_html)
     result_chunks = extract_result_chunks(results_html)
-    first_round_rows = enrich_rows_with_results(first_round_rows, result_chunks)
 
-    # Se il torneo parte già da R64 o R32, costruiamo comunque solo il turno successivo.
-    second_round_code = next_round_code(first_round_code)
-    second_round_entrants = winners_to_entrants(first_round_rows)
-    second_round_rows = pair_entrants(second_round_code, second_round_entrants)
-    second_round_rows = enrich_rows_with_results(second_round_rows, result_chunks)
+    all_rows: List[MatchRow] = []
+    current_round_code = first_round_code
 
-    all_rows = first_round_rows + second_round_rows
+    while current_round_code:
+        current_rows = pair_entrants(current_round_code, current_entrants)
+        current_rows = enrich_rows_with_results(current_rows, result_chunks)
+        all_rows.extend(current_rows)
+
+        next_code = next_round_code(current_round_code)
+        if not next_code:
+            break
+
+        current_entrants = winners_to_entrants(current_rows)
+        current_round_code = next_code
+
     export_csv(all_rows, output_csv)
 
 
@@ -614,14 +607,14 @@ if __name__ == "__main__":
     RESULTS_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/results"
 
     BASE_DIR = Path(__file__).resolve().parent
-    OUTPUT_CSV = BASE_DIR / "indian_wells_up_to_r64.csv"
+    OUTPUT_CSV = BASE_DIR / "indian_wells_full_draw.csv"
 
     print("=== DEBUG START ===")
     print("Working dir:", os.getcwd())
     print("Saving CSV in:", OUTPUT_CSV)
     print("Script starting...")
 
-    build_tournament_csv_up_to_r64(DRAW_URL, RESULTS_URL, str(OUTPUT_CSV))
+    build_full_tournament_csv(DRAW_URL, RESULTS_URL, str(OUTPUT_CSV))
 
     print("CSV creato:", OUTPUT_CSV)
     print("File exists:", OUTPUT_CSV.exists())
