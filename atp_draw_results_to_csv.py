@@ -28,26 +28,29 @@ DRAW_TO_RESULTS_ROUND = {
 
 ROUND_CODES_IN_ORDER = ["R128", "R64", "R32", "R16", "QF", "SF", "F"]
 
-FIRST_ROUND_NAME_COUNTS = {
+ROUND_NAME_COUNTS = {
     "R128": 128,
     "R64": 64,
     "R32": 32,
+    "R16": 16,
+    "QF": 8,
+    "SF": 4,
+    "F": 2,
 }
 
 SPECIAL_COUNTRY_CODES = {"JPN", "CHN", "KOR", "TPE", "HKG"}
 SPECIAL_NAME_EXCEPTION = {"n. osaka"}
 
-LOWERCASE_SURNAME_PARTICLES = {
-    "da", "de", "del", "della", "di", "du", "la", "le",
-    "van", "von", "der", "den", "ten", "ter", "dos"
-}
-
 INLINE_LABEL_PATTERN = re.compile(r"^(.*?)(?:\s*\((\d{1,2}|Q|WC|LL|Alt|PR)\))?$", re.I)
 
 
 @dataclass
-class Entrant:
+class PlayerRow:
     display_name: str
+    score_values: List[int]
+    has_ret: bool
+    has_wo: bool
+    winner_marker: bool
 
 
 @dataclass
@@ -60,12 +63,6 @@ class MatchRow:
     participant_b_score: str
 
 
-@dataclass
-class ResultChunk:
-    round_label: str
-    text: str
-
-
 def fetch_html(url: str) -> str:
     response = requests.get(url, headers=HEADERS, timeout=30)
     response.raise_for_status()
@@ -74,10 +71,6 @@ def fetch_html(url: str) -> str:
 
 def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
-
-
-def strip_display_label(name: str) -> str:
-    return re.sub(r"\s*\[[^\]]+\]\s*$", "", name).strip()
 
 
 def normalize_special_slot(base_name: str) -> str:
@@ -95,24 +88,6 @@ def normalize_special_slot(base_name: str) -> str:
         return "Lucky Loser"
 
     return base_name.strip()
-
-
-def invert_name_for_special_country(name: str, country_code: Optional[str]) -> str:
-    if not country_code or country_code not in SPECIAL_COUNTRY_CODES:
-        return name
-
-    if name.strip().lower() in SPECIAL_NAME_EXCEPTION:
-        return name
-
-    parts = name.split()
-    if len(parts) != 2:
-        return name
-
-    first, last = parts
-    if not first.endswith("."):
-        return name
-
-    return f"{last} {first}"
 
 
 def clean_name_and_label(raw_name_text: str) -> Tuple[str, Optional[str]]:
@@ -143,6 +118,24 @@ def extract_country_code(stats_item: Tag) -> Optional[str]:
         return match.group(1)
 
     return None
+
+
+def invert_name_for_special_country(name: str, country_code: Optional[str]) -> str:
+    if not country_code or country_code not in SPECIAL_COUNTRY_CODES:
+        return name
+
+    if name.strip().lower() in SPECIAL_NAME_EXCEPTION:
+        return name
+
+    parts = name.split()
+    if len(parts) != 2:
+        return name
+
+    first, last = parts
+    if not first.endswith("."):
+        return name
+
+    return f"{last} {first}"
 
 
 def build_display_name(stats_item: Tag) -> Optional[str]:
@@ -190,6 +183,7 @@ def slice_draw_html_for_round(draw_html: str, round_code: str) -> str:
 
     end = len(draw_html)
     start_idx = ROUND_CODES_IN_ORDER.index(round_code)
+
     for next_code in ROUND_CODES_IN_ORDER[start_idx + 1:]:
         next_label = DRAW_TO_RESULTS_ROUND[next_code]
         next_pos = draw_html.find(next_label, start + len(start_label))
@@ -200,173 +194,98 @@ def slice_draw_html_for_round(draw_html: str, round_code: str) -> str:
     return draw_html[start:end]
 
 
-def extract_first_round_entrants(draw_html: str) -> Tuple[str, List[Entrant]]:
-    first_round_code = detect_first_round_code(draw_html)
-    expected_count = FIRST_ROUND_NAME_COUNTS[first_round_code]
+def extract_score_values_from_stats_item(stats_item: Tag, raw_name_text: str) -> Tuple[List[int], bool, bool]:
+    item_text = normalize_space(stats_item.get_text(" ", strip=True))
 
-    round_fragment = slice_draw_html_for_round(draw_html, first_round_code)
+    name_div = stats_item.select_one("div.name")
+    if name_div:
+        item_text = item_text.replace(normalize_space(name_div.get_text(" ", strip=True)), " ")
+
+    country_div = stats_item.select_one("div.country")
+    if country_div:
+        item_text = item_text.replace(normalize_space(country_div.get_text(" ", strip=True)), " ")
+
+    # Rimuove il nome grezzo se ancora presente
+    item_text = item_text.replace(raw_name_text, " ")
+    item_text = normalize_space(item_text)
+
+    upper_text = item_text.upper()
+    has_ret = "RET" in upper_text
+    has_wo = "W/O" in upper_text or "WALKOVER" in upper_text
+
+    # Evita di leggere numeri dalle label già nel nome
+    text_wo_inline_labels = re.sub(r"\((?:\d{1,2}|Q|WC|LL|Alt|PR)\)", " ", item_text, flags=re.I)
+
+    score_values = [int(x) for x in re.findall(r"\b\d\b", text_wo_inline_labels)]
+    return score_values, has_ret, has_wo
+
+
+def stats_item_has_winner_marker(stats_item: Tag) -> bool:
+    html = str(stats_item).lower()
+    return any(
+        marker in html
+        for marker in [
+            "icon-checkmark",
+            "checkmark",
+            "is-winner",
+            "winner",
+            "selected",
+        ]
+    )
+
+
+def build_player_row(stats_item: Tag) -> Optional[PlayerRow]:
+    name_div = stats_item.select_one("div.name")
+    if not name_div:
+        return None
+
+    raw_name_text = normalize_space(name_div.get_text(" ", strip=True))
+    display_name = build_display_name(stats_item)
+    if display_name is None:
+        return None
+
+    score_values, has_ret, has_wo = extract_score_values_from_stats_item(stats_item, raw_name_text)
+    winner_marker = stats_item_has_winner_marker(stats_item)
+
+    return PlayerRow(
+        display_name=display_name,
+        score_values=score_values,
+        has_ret=has_ret,
+        has_wo=has_wo,
+        winner_marker=winner_marker,
+    )
+
+
+def extract_round_player_rows(draw_html: str, round_code: str) -> List[PlayerRow]:
+    expected_count = ROUND_NAME_COUNTS[round_code]
+    round_fragment = slice_draw_html_for_round(draw_html, round_code)
     soup = BeautifulSoup(round_fragment, "html.parser")
 
-    entrants: List[Entrant] = []
-    seen_sequence: List[str] = []
+    rows: List[PlayerRow] = []
+    seen_names: List[str] = []
 
     for stats_item in soup.select("div.stats-item"):
-        display_name = build_display_name(stats_item)
-        if display_name is None:
-            continue
-        if display_name == "":
+        player_row = build_player_row(stats_item)
+        if player_row is None:
             continue
 
-        entrants.append(Entrant(display_name=display_name))
-        seen_sequence.append(display_name)
+        if player_row.display_name == "":
+            continue
 
-        if len(entrants) == expected_count:
+        rows.append(player_row)
+        seen_names.append(player_row.display_name)
+
+        if len(rows) == expected_count:
             break
 
-    if len(entrants) != expected_count:
-        preview = ", ".join(seen_sequence[:20])
+    if len(rows) != expected_count:
+        preview = ", ".join(seen_names[:20])
         raise ValueError(
-            f"Estratti {len(entrants)} nomi per {first_round_code}, attesi {expected_count}. "
+            f"Estratti {len(rows)} nomi per {round_code}, attesi {expected_count}. "
             f"Primi nomi letti: {preview}"
         )
 
-    return first_round_code, entrants
-
-
-def pair_entrants(round_code: str, entrants: List[Entrant]) -> List[MatchRow]:
-    rows: List[MatchRow] = []
-
-    for i in range(0, len(entrants), 2):
-        player_a = entrants[i].display_name
-        player_b = entrants[i + 1].display_name
-
-        winner = ""
-        score_a = ""
-        score_b = ""
-
-        if player_a == "bye" and player_b != "bye":
-            winner = player_b
-        elif player_b == "bye" and player_a != "bye":
-            winner = player_a
-
-        rows.append(
-            MatchRow(
-                round_code=round_code,
-                player_a=player_a,
-                player_b=player_b,
-                winner=winner,
-                participant_a_score=score_a,
-                participant_b_score=score_b,
-            )
-        )
-
     return rows
-
-
-def remove_labels_and_parens(name: str) -> str:
-    name = re.sub(r"\s*\[[^\]]+\]\s*$", "", name).strip()
-    name = re.sub(r"\s*\((?:\d{1,2}|Q|WC|LL|Alt|PR)\)\s*$", "", name).strip()
-    return normalize_space(name)
-
-
-def split_name_for_matching(name: str) -> Tuple[str, str]:
-    name = remove_labels_and_parens(name)
-    if not name:
-        return "", ""
-
-    parts = name.split()
-
-    # Formato invertito: "Shimabukuro S."
-    if len(parts) == 2 and parts[-1].endswith("."):
-        initial = parts[-1][0].lower()
-        surname = parts[0].lower()
-        return initial, surname
-
-    # Formato standard draw: "B. van de Zandschulp"
-    if parts[0].endswith("."):
-        initial = parts[0][0].lower()
-        surname = " ".join(parts[1:]).lower()
-        return initial, surname
-
-    # Formato results completo: "Botic van de Zandschulp"
-    initial = parts[0][0].lower()
-
-    first_particle_idx = None
-    for idx, token in enumerate(parts[1:], start=1):
-        if token.lower() in LOWERCASE_SURNAME_PARTICLES:
-            first_particle_idx = idx
-            break
-
-    if first_particle_idx is not None:
-        surname = " ".join(parts[first_particle_idx:]).lower()
-    else:
-        surname = parts[-1].lower()
-
-    return initial, surname
-
-
-def build_player_regex(display_name: str) -> Optional[re.Pattern[str]]:
-    base = remove_labels_and_parens(display_name)
-    lowered = base.lower()
-
-    if lowered in {"", "bye", "qualifier", "qualifier / lucky loser", "lucky loser"}:
-        return None
-
-    initial, surname = split_name_for_matching(base)
-    if not initial or not surname:
-        return None
-
-    surname_pattern = re.escape(surname).replace(r"\ ", r"\s+")
-    regex = rf"\b{re.escape(initial)}[a-z\-']*(?:\s+[a-z\-']+)*\s+{surname_pattern}\b"
-    return re.compile(regex, re.I)
-
-
-def build_winner_regex_from_chunk(chunk_text: str) -> Optional[str]:
-    match = re.search(r"Game Set and Match\s+(.+?)\.", chunk_text, flags=re.I)
-    if match:
-        return normalize_space(match.group(1))
-
-    match = re.search(r"Winner:\s*(.+?)\s+by\s+Walkover", chunk_text, flags=re.I)
-    if match:
-        return normalize_space(match.group(1))
-
-    match = re.search(r"(.+?)\s+wins the match\b", chunk_text, flags=re.I)
-    if match:
-        return normalize_space(match.group(1))
-
-    return None
-
-
-def extract_score_from_chunk(chunk_text: str) -> str:
-    if re.search(r"\bWalkover\b|\bW/O\b", chunk_text, flags=re.I):
-        return "W/O"
-
-    match = re.search(r"wins the match\s+(.+?)(?:\.|$)", chunk_text, flags=re.I)
-    if match:
-        return normalize_space(match.group(1))
-
-    return ""
-
-
-def parse_score_tokens(raw_score: str) -> Tuple[List[Tuple[int, int]], bool, bool]:
-    text = normalize_space(raw_score)
-    upper = text.upper()
-
-    has_ret = "RET" in upper
-    has_wo = "W/O" in upper or "WALKOVER" in upper
-
-    text = re.sub(r"\bRET\.?\b", "", text, flags=re.I)
-    text = re.sub(r"\bW/O\b", "", text, flags=re.I)
-    text = re.sub(r"\bWALKOVER\b", "", text, flags=re.I)
-
-    # 7-6(5) -> 7-6 ; 6(5)-7 -> 6-7
-    text = re.sub(r"(\d+)\(\d+\)", r"\1", text)
-
-    sets_found: List[Tuple[int, int]] = []
-    for left, right in re.findall(r"(\d+)\s*-\s*(\d+)", text):
-        sets_found.append((int(left), int(right)))
-
-    return sets_found, has_ret, has_wo
 
 
 def is_complete_set(a_games: int, b_games: int) -> bool:
@@ -379,233 +298,169 @@ def is_complete_set(a_games: int, b_games: int) -> bool:
     return False
 
 
-def convert_raw_score_to_csv_scores(
-    raw_score: str,
-    winner_is_a: bool,
-) -> Tuple[str, str]:
-    """
-    ATP mostra lo score dal punto di vista del vincitore.
-    """
-    sets_found, has_ret, has_wo = parse_score_tokens(raw_score)
+def count_complete_sets(a_scores: List[int], b_scores: List[int]) -> Tuple[int, int]:
+    a_sets = 0
+    b_sets = 0
 
-    if has_wo:
-        return ("W/O", "") if winner_is_a else ("", "W/O")
-
-    winner_sets = 0
-    loser_sets = 0
-
-    for left_games, right_games in sets_found:
-        if not is_complete_set(left_games, right_games):
+    for a_games, b_games in zip(a_scores, b_scores):
+        if not is_complete_set(a_games, b_games):
             continue
+        if a_games > b_games:
+            a_sets += 1
+        elif b_games > a_games:
+            b_sets += 1
 
-        if left_games > right_games:
-            winner_sets += 1
-        elif right_games > left_games:
-            loser_sets += 1
-
-    if has_ret:
-        if winner_is_a:
-            return str(winner_sets), f"(rit.) {loser_sets}"
-        return f"(rit.) {loser_sets}", str(winner_sets)
-
-    if winner_is_a:
-        return str(winner_sets), str(loser_sets)
-    return str(loser_sets), str(winner_sets)
+    return a_sets, b_sets
 
 
-def extract_result_chunks(results_html: str) -> List[ResultChunk]:
-    soup = BeautifulSoup(results_html, "html.parser")
-    text = soup.get_text("\n", strip=True)
-    lines = [normalize_space(line) for line in text.splitlines()]
-    lines = [line for line in lines if line]
+def determine_winner(
+    player_a: PlayerRow,
+    player_b: PlayerRow,
+    a_sets: int,
+    b_sets: int,
+) -> str:
+    if player_a.display_name == "bye" and player_b.display_name != "bye":
+        return player_b.display_name
+    if player_b.display_name == "bye" and player_a.display_name != "bye":
+        return player_a.display_name
 
-    round_labels = list(DRAW_TO_RESULTS_ROUND.values())
-    chunks: List[ResultChunk] = []
+    if player_a.winner_marker and not player_b.winner_marker:
+        return player_a.display_name
+    if player_b.winner_marker and not player_a.winner_marker:
+        return player_b.display_name
 
-    current_round: Optional[str] = None
-    current_lines: List[str] = []
+    if a_sets > b_sets:
+        return player_a.display_name
+    if b_sets > a_sets:
+        return player_b.display_name
 
-    def flush_chunk() -> None:
-        nonlocal current_round, current_lines, chunks
-        if current_round and current_lines:
-            chunk_text = "\n".join(current_lines).strip()
-            if chunk_text:
-                chunks.append(ResultChunk(round_label=current_round, text=chunk_text))
-        current_lines = []
-
-    for line in lines:
-        matched_round = None
-        for round_label in round_labels:
-            # es. "Round of 64 - Stadium 1 01:04:51"
-            if line.startswith(round_label):
-                matched_round = round_label
-                break
-
-        if matched_round:
-            flush_chunk()
-            current_round = matched_round
-            current_lines = [line]
-            continue
-
-        # ignora i giorni, ma non chiudere il chunk
-        if re.match(r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),", line):
-            continue
-
-        if current_round:
-            current_lines.append(line)
-
-    flush_chunk()
-    return chunks
-
-
-def chunk_matches_players(chunk_text: str, player_a: str, player_b: str) -> bool:
-    regex_a = build_player_regex(player_a)
-    regex_b = build_player_regex(player_b)
-
-    if not regex_a or not regex_b:
-        return False
-
-    return bool(regex_a.search(chunk_text) and regex_b.search(chunk_text))
-
-
-def chunk_matches_players_fallback(chunk_text: str, player_a: str, player_b: str) -> bool:
-    _, surname_a = split_name_for_matching(player_a)
-    _, surname_b = split_name_for_matching(player_b)
-
-    if not surname_a or not surname_b:
-        return False
-
-    text = chunk_text.lower()
-    return surname_a in text and surname_b in text
-
-
-def winner_from_chunk_for_row(chunk_text: str, player_a: str, player_b: str) -> str:
-    winner_text = build_winner_regex_from_chunk(chunk_text)
-    if not winner_text:
-        return ""
-
-    regex_a = build_player_regex(player_a)
-    regex_b = build_player_regex(player_b)
-
-    if regex_a and regex_a.search(winner_text):
-        return player_a
-    if regex_b and regex_b.search(winner_text):
-        return player_b
-
-    _, surname_a = split_name_for_matching(player_a)
-    _, surname_b = split_name_for_matching(player_b)
-
-    lowered_winner = winner_text.lower()
-    if surname_a and surname_a in lowered_winner:
-        return player_a
-    if surname_b and surname_b in lowered_winner:
-        return player_b
+    # Walkover senza punteggi: prova a capire dal marker, altrimenti lascia vuoto.
+    if player_a.has_wo and not player_b.has_wo:
+        return player_a.display_name
+    if player_b.has_wo and not player_a.has_wo:
+        return player_b.display_name
 
     return ""
 
 
-def enrich_rows_with_results(rows: List[MatchRow], result_chunks: List[ResultChunk]) -> List[MatchRow]:
-    if not rows:
-        return rows
+def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: PlayerRow) -> MatchRow:
+    # bye
+    if player_a.display_name == "bye" and player_b.display_name != "bye":
+        return MatchRow(
+            round_code=round_code,
+            player_a=player_a.display_name,
+            player_b=player_b.display_name,
+            winner=player_b.display_name,
+            participant_a_score="",
+            participant_b_score="",
+        )
 
-    target_round = DRAW_TO_RESULTS_ROUND[rows[0].round_code]
-    round_chunks = [chunk for chunk in result_chunks if chunk.round_label == target_round]
-    used_chunk_indexes = set()
+    if player_b.display_name == "bye" and player_a.display_name != "bye":
+        return MatchRow(
+            round_code=round_code,
+            player_a=player_a.display_name,
+            player_b=player_b.display_name,
+            winner=player_a.display_name,
+            participant_a_score="",
+            participant_b_score="",
+        )
 
-    # 1) matching esatto / fallback cognomi
-    for row in rows:
-        # bye già gestito
-        if row.player_a == "bye" or row.player_b == "bye":
-            continue
+    # walkover senza game
+    if (player_a.has_wo or player_b.has_wo) and not player_a.score_values and not player_b.score_values:
+        if player_a.winner_marker and not player_b.winner_marker:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=player_a.display_name,
+                participant_a_score="W/O",
+                participant_b_score="",
+            )
+        if player_b.winner_marker and not player_a.winner_marker:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=player_b.display_name,
+                participant_a_score="",
+                participant_b_score="W/O",
+            )
 
-        exact_idx = None
-        fallback_idx = None
+    a_sets, b_sets = count_complete_sets(player_a.score_values, player_b.score_values)
+    winner = determine_winner(player_a, player_b, a_sets, b_sets)
 
-        for idx, chunk in enumerate(round_chunks):
-            if idx in used_chunk_indexes:
-                continue
+    # Ritiro
+    has_ret = player_a.has_ret or player_b.has_ret
+    if has_ret:
+        if winner == player_a.display_name:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=winner,
+                participant_a_score=str(a_sets),
+                participant_b_score=f"(rit.) {b_sets}",
+            )
+        if winner == player_b.display_name:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=winner,
+                participant_a_score=f"(rit.) {a_sets}",
+                participant_b_score=str(b_sets),
+            )
 
-            if chunk_matches_players(chunk.text, row.player_a, row.player_b):
-                exact_idx = idx
-                break
+    # Walkover anche senza marker esplicito: se non ci sono punteggi completi ma c'è un winner
+    if (player_a.has_wo or player_b.has_wo) and winner:
+        if winner == player_a.display_name:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=winner,
+                participant_a_score="W/O",
+                participant_b_score="",
+            )
+        return MatchRow(
+            round_code=round_code,
+            player_a=player_a.display_name,
+            player_b=player_b.display_name,
+            winner=winner,
+            participant_a_score="",
+            participant_b_score="W/O",
+        )
 
-            if fallback_idx is None and chunk_matches_players_fallback(chunk.text, row.player_a, row.player_b):
-                fallback_idx = idx
-
-        chosen_idx = exact_idx if exact_idx is not None else fallback_idx
-        if chosen_idx is None:
-            continue
-
-        chosen_chunk = round_chunks[chosen_idx]
-        winner = winner_from_chunk_for_row(chosen_chunk.text, row.player_a, row.player_b)
-        if not winner:
-            continue
-
-        raw_score = extract_score_from_chunk(chosen_chunk.text)
-        winner_is_a = winner == row.player_a
-        score_a, score_b = convert_raw_score_to_csv_scores(raw_score, winner_is_a)
-
-        row.winner = winner
-        row.participant_a_score = score_a
-        row.participant_b_score = score_b
-        used_chunk_indexes.add(chosen_idx)
-
-    # 2) fallback per posizione nel round
-    unmatched_rows = [
-        row for row in rows
-        if not row.winner and row.player_a != "bye" and row.player_b != "bye"
-    ]
-    remaining_chunks = [
-        (idx, chunk) for idx, chunk in enumerate(round_chunks)
-        if idx not in used_chunk_indexes
-    ]
-
-    for row, (idx, chunk) in zip(unmatched_rows, remaining_chunks):
-        winner = winner_from_chunk_for_row(chunk.text, row.player_a, row.player_b)
-        if not winner:
-            winner_text = build_winner_regex_from_chunk(chunk.text)
-            if winner_text:
-                lowered = winner_text.lower()
-                _, surname_a = split_name_for_matching(row.player_a)
-                _, surname_b = split_name_for_matching(row.player_b)
-
-                if surname_a and surname_a in lowered:
-                    winner = row.player_a
-                elif surname_b and surname_b in lowered:
-                    winner = row.player_b
-
-        if not winner:
-            continue
-
-        raw_score = extract_score_from_chunk(chunk.text)
-        winner_is_a = winner == row.player_a
-        score_a, score_b = convert_raw_score_to_csv_scores(raw_score, winner_is_a)
-
-        row.winner = winner
-        row.participant_a_score = score_a
-        row.participant_b_score = score_b
-        used_chunk_indexes.add(idx)
-
-    return rows
-
-
-def winners_to_entrants(rows: List[MatchRow]) -> List[Entrant]:
-    missing = [
-        f"{row.round_code}: {row.player_a} vs {row.player_b}"
-        for row in rows
-        if not row.winner
-    ]
-    if missing:
-        raise ValueError("Manca il winner per questi match: " + " | ".join(missing))
-
-    return [Entrant(display_name=row.winner) for row in rows]
+    return MatchRow(
+        round_code=round_code,
+        player_a=player_a.display_name,
+        player_b=player_b.display_name,
+        winner=winner,
+        participant_a_score=str(a_sets) if winner else "",
+        participant_b_score=str(b_sets) if winner else "",
+    )
 
 
-def next_round_code(current_round_code: str) -> Optional[str]:
-    idx = ROUND_CODES_IN_ORDER.index(current_round_code)
-    if idx + 1 >= len(ROUND_CODES_IN_ORDER):
-        return None
-    return ROUND_CODES_IN_ORDER[idx + 1]
+def build_round_rows_from_draw(draw_html: str, round_code: str) -> List[MatchRow]:
+    player_rows = extract_round_player_rows(draw_html, round_code)
+
+    match_rows: List[MatchRow] = []
+    for i in range(0, len(player_rows), 2):
+        match_rows.append(build_match_row_from_pair(round_code, player_rows[i], player_rows[i + 1]))
+
+    return match_rows
+
+
+def available_round_codes(draw_html: str, first_round_code: str) -> List[str]:
+    start_idx = ROUND_CODES_IN_ORDER.index(first_round_code)
+    rounds: List[str] = []
+
+    for code in ROUND_CODES_IN_ORDER[start_idx:]:
+        label = DRAW_TO_RESULTS_ROUND[code]
+        if label in draw_html or f">{code}<" in draw_html:
+            rounds.append(code)
+
+    return rounds
 
 
 def export_csv(rows: List[MatchRow], output_path: str) -> None:
@@ -630,34 +485,21 @@ def export_csv(rows: List[MatchRow], output_path: str) -> None:
             ])
 
 
-def build_full_tournament_csv(draw_url: str, results_url: str, output_csv: str) -> None:
+def build_full_tournament_csv_from_draw(draw_url: str, output_csv: str) -> None:
     draw_html = fetch_html(draw_url)
-    results_html = fetch_html(results_url)
-
-    first_round_code, current_entrants = extract_first_round_entrants(draw_html)
-    result_chunks = extract_result_chunks(results_html)
+    first_round_code = detect_first_round_code(draw_html)
+    rounds = available_round_codes(draw_html, first_round_code)
 
     all_rows: List[MatchRow] = []
-    current_round_code = first_round_code
-
-    while current_round_code:
-        current_rows = pair_entrants(current_round_code, current_entrants)
-        current_rows = enrich_rows_with_results(current_rows, result_chunks)
-        all_rows.extend(current_rows)
-
-        next_code = next_round_code(current_round_code)
-        if not next_code:
-            break
-
-        current_entrants = winners_to_entrants(current_rows)
-        current_round_code = next_code
+    for round_code in rounds:
+        round_rows = build_round_rows_from_draw(draw_html, round_code)
+        all_rows.extend(round_rows)
 
     export_csv(all_rows, output_csv)
 
 
 if __name__ == "__main__":
     DRAW_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/draws"
-    RESULTS_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/results"
 
     BASE_DIR = Path(__file__).resolve().parent
     OUTPUT_CSV = BASE_DIR / "indian_wells_full_draw.csv"
@@ -667,7 +509,7 @@ if __name__ == "__main__":
     print("Saving CSV in:", OUTPUT_CSV)
     print("Script starting...")
 
-    build_full_tournament_csv(DRAW_URL, RESULTS_URL, str(OUTPUT_CSV))
+    build_full_tournament_csv_from_draw(DRAW_URL, str(OUTPUT_CSV))
 
     print("CSV creato:", OUTPUT_CSV)
     print("File exists:", OUTPUT_CSV.exists())
