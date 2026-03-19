@@ -3,550 +3,1006 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
+import json
 import re
 import sys
-import unicodedata
-from dataclasses import dataclass, field
+import time
+import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
+from pypdf import PdfReader
 
-DEFAULT_DRAWS_URL = "https://www.atptour.com/en/scores/current/indian-wells/404/draws"
-DEFAULT_RESULTS_URL = "https://www.atptour.com/en/scores/current/indian-wells/404/results"
-USER_AGENT = "Mozilla/5.0 (compatible; ATPDrawCSV/1.0)"
-ROUND_HEADER_RE = re.compile(r"^(Round of (?:128|96|64|48|32|24|16)|Quarterfinals|Semifinals|Final)\b")
-DAY_HEADER_RE = re.compile(r"^[A-Z][a-z]{2},\s+\d{2}\s+[A-Z][a-z]{2},\s+\d{4}\s+Day\s+\(\d+\)$")
-SEED_RE = re.compile(r"^\((\d+)\)$")
-SCORE_LINE_RE = re.compile(r"^[0-9()\s]+$")
-ABBREV_NAME_RE = re.compile(r"^[A-Z]\.\s+.+$")
-FULLISH_NAME_RE = re.compile(r"^[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’.-]+)+$")
-IGNORE_LINES = {
-    "Print",
-    "Previous",
-    "Next",
-    "Versus",
-    "Singles",
-    "Doubles",
-    "Qual Singles",
+DEFAULT_TOURNAMENT_URL = "https://www.atptour.com/en/scores/current/indian-wells/404"
+DEFAULT_DRAW_PAGE = ""
+DEFAULT_RESULTS_PAGE = ""
+DEFAULT_FALLBACK_PDF = "https://www.protennislive.com/posting/{year}/{tournament_id}/mds.pdf"
+DEFAULT_TOURNAMENT_ID = "404"
+
+LOWERCASE_PARTICLES = {
+    "de", "del", "della", "di", "da", "dos", "das",
+    "van", "von", "der", "den", "la", "le"
 }
-IGNORE_PREFIXES = (
-    "Ump:",
-    "Game Set and Match",
-    "1st serve",
-    "2nd serve",
-    "Match point",
-    "Break point",
-    "Ace",
-    "Double fault",
-)
-ROUND_KEY_ORDER = ["R128", "R96", "R64", "R48", "R32", "R24", "R16", "QF", "SF", "F"]
+
+STATUS_LABELS = {
+    "WC": "[WC]",
+    "Q": "[Q]",
+    "LL": "[LL]",
+    "PR": "[PR]",
+    "ALT": "[Alt]",
+}
+
+ROUND_HEADER_TO_LABEL = {
+    "Round of 128": "1° turno",
+    "Round of 96": "1° turno",
+    "Round of 64": "1° turno",
+    "Round of 48": "1° turno",
+    "Round of 32": "1° turno",
+    "Round of 24": "1° turno",
+    "Round of 16": "Ottavi di finale",
+    "Quarterfinals": "Quarti di finale",
+    "Semifinals": "Semifinali",
+    "Final": "Finale",
+}
+
+RESULT_RETIREMENT_RE = re.compile(r"\b(?:RET|Ret|ret|retired|retirement|RIT\.?)\b", re.IGNORECASE)
+RESULT_WALKOVER_RE = re.compile(r"\b(?:W/O|WO|walkover|walk-over)\b", re.IGNORECASE)
 
 
-@dataclass
-class MatchResult:
-    round_key: str
-    player1_raw: str = ""
-    player2_raw: str = ""
-    winner_raw: str = ""
-    outcome_type: str = ""
-    score_raw: str = ""
-    p1_score_lines: list[str] = field(default_factory=list)
-    p2_score_lines: list[str] = field(default_factory=list)
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-@dataclass
-class MatchRow:
-    round_label: str
-    player_a: str
-    player_b: str
-    winner: str = ""
-    participant_a_score: str = ""
-    participant_b_score: str = ""
+def smart_title_token(token: str) -> str:
+    token = token.strip()
+    if not token:
+        return token
+    if "-" in token:
+        return "-".join(smart_title_token(part) for part in token.split("-"))
+    if "'" in token:
+        return "'".join(smart_title_token(part) for part in token.split("'"))
+    lower = token.lower()
+    if lower in LOWERCASE_PARTICLES:
+        return lower
+    return token[:1].upper() + token[1:].lower()
 
 
-class ParseError(RuntimeError):
-    pass
+def smart_join_tokens(tokens: list[str]) -> str:
+    return " ".join(smart_title_token(tok) for tok in tokens if tok)
 
 
-def fetch_html(url: str, session: requests.Session) -> str:
-    response = session.get(url, timeout=30)
-    response.raise_for_status()
-    return response.text
-
-
-def html_to_lines(html: str) -> list[str]:
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text("\n")
-    out: list[str] = []
-    for raw in text.splitlines():
-        line = re.sub(r"\s+", " ", raw).strip()
-        if not line:
-            continue
-        if line in IGNORE_LINES:
-            continue
-        out.append(line)
-    return out
-
-
-def round_header_to_key(line: str) -> str | None:
-    m = ROUND_HEADER_RE.match(line)
-    if not m:
-        return None
-    header = m.group(1)
-    if header.startswith("Round of "):
-        return f"R{header.split()[-1]}"
-    if header == "Quarterfinals":
-        return "QF"
-    if header == "Semifinals":
-        return "SF"
-    if header == "Final":
-        return "F"
-    return None
-
-
-def key_from_slots_count(slots_count: int) -> str:
-    if slots_count in {128, 96, 64, 48, 32, 24, 16}:
-        return f"R{slots_count}"
-    if slots_count == 8:
-        return "QF"
-    if slots_count == 4:
-        return "SF"
-    if slots_count == 2:
-        return "F"
-    raise ValueError(f"Unsupported slots count: {slots_count}")
-
-
-def label_for_round(round_index: int, total_rounds: int) -> str:
-    remaining = total_rounds - round_index + 1
-    if remaining == 4:
-        return "Ottavi di finale"
-    if remaining == 3:
-        return "Quarti di finale"
-    if remaining == 2:
-        return "Semifinali"
-    if remaining == 1:
+def get_round_label(round_size: int, initial_draw_size: int) -> str:
+    if round_size == 1:
         return "Finale"
-    return f"{round_index}° turno"
+    if round_size == 2:
+        return "Semifinali"
+    if round_size == 4:
+        return "Quarti di finale"
+    if round_size == 8:
+        return "Ottavi di finale"
+
+    known = {
+        128: {64: "1° turno", 32: "2° turno", 16: "3° turno"},
+        96:  {48: "1° turno", 32: "2° turno", 16: "3° turno"},
+        64:  {32: "1° turno", 16: "2° turno"},
+        56:  {32: "1° turno", 16: "2° turno"},
+        48:  {24: "1° turno", 16: "2° turno"},
+        32:  {16: "1° turno"},
+        28:  {16: "1° turno"},
+        24:  {12: "1° turno"},
+        16:  {8: "1° turno"},
+    }
+    return known.get(initial_draw_size, {}).get(round_size, f"Round {round_size}")
 
 
-def strip_seed(display_name: str) -> str:
-    return re.sub(r"\s*\[\d+\]$", "", display_name).strip()
+def map_atp_round_to_label(round_text: str) -> str | None:
+    return ROUND_HEADER_TO_LABEL.get((round_text or "").strip())
 
 
-def normalize_ascii(text: str) -> str:
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return text
+def format_name(raw_name: str, seed: str = "", entry_status: str = "", country: str = "") -> str:
+    raw_name = (raw_name or "").replace(",", "").strip()
+    country = (country or "").strip().upper()
 
+    if not raw_name:
+        return ""
+    if raw_name == "Bye":
+        return "bye"
+    if raw_name == "Qualifier / Lucky Loser":
+        return "[Q/LL]"
+    if raw_name == "Qualifier":
+        return "[Q]"
+    if raw_name == "TBA":
+        return "TBA"
 
-def tokenize_name(text: str) -> list[str]:
-    text = normalize_ascii(text).lower()
-    text = re.sub(r"\[[^\]]+\]", " ", text)
-    text = text.replace("…", " ")
-    text = re.sub(r"[^a-z0-9'’ .-]", " ", text)
-    text = text.replace("’", "'")
-    tokens = [t for t in re.split(r"[\s.-]+", text) if t]
-    return tokens
+    tokens = raw_name.split()
 
+    if len(tokens) == 1:
+        base_name = smart_title_token(tokens[0])
+    else:
+        surname_tokens = []
+        given_tokens = []
 
-def display_matches_full(display_name: str, full_name: str) -> bool:
-    if display_name == "Bye":
-        return full_name.lower() == "bye"
-    d_tokens = tokenize_name(strip_seed(display_name))
-    f_tokens = tokenize_name(full_name)
-    if len(d_tokens) < 2 or len(f_tokens) < 2:
-        return False
-    display_initial = d_tokens[0][0]
-    if f_tokens[0][0] != display_initial:
-        return False
-    display_tail = d_tokens[1:]
-    if len(display_tail) > len(f_tokens) - 1:
-        return False
-    return f_tokens[-len(display_tail):] == display_tail
-
-
-def parse_score_tokens(lines: Iterable[str]) -> list[int]:
-    tokens: list[int] = []
-    for line in lines:
-        for token in re.findall(r"\d+", line):
-            tokens.append(int(token))
-    return tokens
-
-
-def sets_won_from_score_lines(p1_lines: list[str], p2_lines: list[str]) -> tuple[int, int] | None:
-    p1 = parse_score_tokens(p1_lines)
-    p2 = parse_score_tokens(p2_lines)
-    if not p1 or not p2:
-        return None
-    set_count = min(len(p1), len(p2), 5)
-    if set_count <= 0:
-        return None
-    p1 = p1[:set_count]
-    p2 = p2[:set_count]
-    wins1 = wins2 = 0
-    for a, b in zip(p1, p2):
-        if a > b:
-            wins1 += 1
-        elif b > a:
-            wins2 += 1
-    if wins1 == wins2 == 0:
-        return None
-    return wins1, wins2
-
-
-def sets_won_from_score_raw(score_raw: str) -> tuple[int, int] | None:
-    score_raw = score_raw.strip()
-    if not score_raw:
-        return None
-    wins1 = wins2 = 0
-    pairs = re.findall(r"(\d+)-(\d+)(?:\([^)]*\))?", score_raw)
-    if not pairs:
-        return None
-    for left, right in pairs:
-        a = int(left)
-        b = int(right)
-        if a > b:
-            wins1 += 1
-        elif b > a:
-            wins2 += 1
-    if wins1 == wins2 == 0:
-        return None
-    return wins1, wins2
-
-
-def looks_like_draw_player_line(line: str) -> bool:
-    if line == "Bye":
-        return True
-    if not ABBREV_NAME_RE.match(line):
-        return False
-    if any(line.startswith(prefix) for prefix in IGNORE_PREFIXES):
-        return False
-    if "H2H" in line or "Stats" in line:
-        return False
-    return True
-
-
-def looks_like_full_name_line(line: str) -> bool:
-    if line == "Bye":
-        return True
-    if not FULLISH_NAME_RE.match(line):
-        return False
-    if line.startswith("ATP "):
-        return False
-    if DAY_HEADER_RE.match(line):
-        return False
-    if ROUND_HEADER_RE.match(line):
-        return False
-    if any(line.startswith(prefix) for prefix in IGNORE_PREFIXES):
-        return False
-    if "H2H" in line or "Stats" in line:
-        return False
-    return True
-
-
-def attach_seed(base_name: str, maybe_seed_line: str | None) -> str:
-    if not maybe_seed_line:
-        return base_name
-    m = SEED_RE.match(maybe_seed_line)
-    if not m:
-        return base_name
-    return f"{base_name} [{m.group(1)}]"
-
-
-def parse_draw_slots(lines: list[str], debug: bool = False) -> list[str]:
-    start_idx = -1
-    initial_key = None
-    for i, line in enumerate(lines):
-        key = round_header_to_key(line)
-        if key and key in {"R128", "R96", "R64", "R48", "R32"}:
-            start_idx = i
-            initial_key = key
-            break
-    if start_idx < 0:
-        raise ParseError("Could not find the first round on the draws page")
-
-    slots: list[str] = []
-    i = start_idx + 1
-    while i < len(lines):
-        line = lines[i]
-        if i > start_idx + 1 and round_header_to_key(line):
-            break
-        if looks_like_draw_player_line(line):
-            seed_line = lines[i + 1] if i + 1 < len(lines) else None
-            slots.append(attach_seed(line, seed_line))
-        i += 1
-
-    expected_slots = int(initial_key[1:])
-    if len(slots) < expected_slots:
-        raise ParseError(f"Found only {len(slots)} draw slots on the draws page, expected at least {expected_slots}")
-    if len(slots) > expected_slots:
-        slots = slots[:expected_slots]
-
-    if debug:
-        print(f"[debug] initial draw key={initial_key} slots={len(slots)}", file=sys.stderr)
-        print(f"[debug] first 12 slots={slots[:12]}", file=sys.stderr)
-    return slots
-
-
-def parse_results_blocks(lines: list[str], debug: bool = False) -> dict[str, list[MatchResult]]:
-    by_round: dict[str, list[MatchResult]] = {}
-    i = 0
-    while i < len(lines):
-        round_key = round_header_to_key(lines[i])
-        if not round_key:
-            i += 1
-            continue
-        block: list[str] = []
-        j = i + 1
-        while j < len(lines):
-            line = lines[j]
-            if round_header_to_key(line) or DAY_HEADER_RE.match(line):
+        for i, tok in enumerate(tokens):
+            if tok.isupper():
+                surname_tokens.append(tok)
+            else:
+                given_tokens = tokens[i:]
                 break
-            block.append(line)
-            j += 1
-        result = parse_single_result_block(round_key, block)
-        if result.player1_raw and result.player2_raw:
-            by_round.setdefault(round_key, []).append(result)
-        i = j
-    if debug:
-        summary = {k: len(v) for k, v in by_round.items()}
-        print(f"[debug] parsed results per round={summary}", file=sys.stderr)
-    return by_round
+
+        if not surname_tokens or not given_tokens:
+            surname_tokens = tokens[:-1]
+            given_tokens = [tokens[-1]]
+
+        surname = smart_join_tokens(surname_tokens)
+        given_name = smart_join_tokens(given_tokens)
+        first_initial = f"{given_name[0].upper()}." if given_name else ""
+        base_name = f"{first_initial} {surname}".strip()
+
+    extras = []
+    if seed:
+        extras.append(f"[{seed}]")
+    if entry_status in STATUS_LABELS:
+        extras.append(STATUS_LABELS[entry_status])
+
+    if extras:
+        return f"{base_name} {' '.join(extras)}"
+    return base_name
 
 
-def parse_single_result_block(round_key: str, block_lines: list[str]) -> MatchResult:
-    result = MatchResult(round_key=round_key)
-    state = 0
-    pending_seed_allowed = False
-    for idx, line in enumerate(block_lines):
-        if not line or line in IGNORE_LINES:
-            continue
-        if any(line.startswith(prefix) for prefix in IGNORE_PREFIXES):
-            if line.startswith("Game Set and Match"):
-                m = re.search(r"Game Set and Match\s+(.+?)\.\s+.+?wins the match\s+(.+?)\s*\.?", line)
-                if m:
-                    result.winner_raw = m.group(1).strip()
-                    result.score_raw = m.group(2).strip()
-            continue
-        if line.startswith("Winner:"):
-            winner_text = line[len("Winner:"):].strip()
-            if "walkover" in winner_text.lower() or "w/o" in winner_text.lower():
-                result.outcome_type = "W/O"
-            winner_text = re.sub(r"\s+by\s+Walkover.*$", "", winner_text, flags=re.I).strip()
-            result.winner_raw = winner_text
-            continue
-        if "H2H" in line or "Stats" in line:
-            continue
-        if SEED_RE.match(line):
-            pending_seed_allowed = False
-            continue
-        if state == 1 and SCORE_LINE_RE.match(line):
-            result.p1_score_lines.append(line)
-            continue
-        if state == 2 and SCORE_LINE_RE.match(line):
-            result.p2_score_lines.append(line)
-            continue
-        if looks_like_full_name_line(line):
-            if not result.player1_raw:
-                result.player1_raw = line
-                state = 1
-                pending_seed_allowed = True
-                continue
-            if not result.player2_raw:
-                result.player2_raw = line
-                state = 2
-                pending_seed_allowed = True
-                continue
-        pending_seed_allowed = False
+def is_tournament_metadata(text: str) -> bool:
+    if not text:
+        return False
 
-    if not result.score_raw:
-        # leave score_raw empty; sets can still be derived later from score lines
-        pass
-    return result
+    t = text.strip().lower()
+    month_words = [
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december"
+    ]
+
+    if any(month in t for month in month_words):
+        return True
+    if "usd" in t:
+        return True
+    if "hard" in t or "clay" in t or "grass" in t:
+        return True
+    if "|" in t:
+        return True
+
+    return False
 
 
-def find_matching_result(row: MatchRow, candidates: list[MatchResult], used: set[int]) -> MatchResult | None:
-    matches: list[tuple[int, int]] = []
-    for idx, candidate in enumerate(candidates):
-        if idx in used:
-            continue
-        direct = display_matches_full(row.player_a, candidate.player1_raw) and display_matches_full(row.player_b, candidate.player2_raw)
-        swapped = display_matches_full(row.player_a, candidate.player2_raw) and display_matches_full(row.player_b, candidate.player1_raw)
-        if direct or swapped:
-            score = 2 if direct else 1
-            matches.append((score, idx))
-    if not matches:
-        return None
-    matches.sort(reverse=True)
-    chosen_idx = matches[0][1]
-    used.add(chosen_idx)
-    return candidates[chosen_idx]
+def normalize_tournament_url(url: str) -> str:
+    url = (url or "").strip()
+    if not url:
+        return ""
+    return url.rstrip("/")
 
 
-def resolve_winner_display(row: MatchRow, result: MatchResult) -> str:
-    if result.winner_raw:
-        if display_matches_full(row.player_a, result.winner_raw):
-            return row.player_a
-        if display_matches_full(row.player_b, result.winner_raw):
-            return row.player_b
-    sets = sets_for_row_order(row, result)
-    if sets:
-        a_sets, b_sets = sets
-        if a_sets > b_sets:
-            return row.player_a
-        if b_sets > a_sets:
-            return row.player_b
+def infer_tournament_id_from_url(url: str) -> str:
+    path = urlparse(url).path.strip("/")
+    parts = path.split("/")
+
+    for i in range(len(parts) - 1):
+        if parts[i] in {"current", "current-challenger"} and i + 2 < len(parts):
+            candidate = parts[i + 2]
+            if candidate.isdigit():
+                return candidate
+
+    matches = re.findall(r"/(\d+)(?:/|$)", path)
+    if matches:
+        return matches[-1]
     return ""
 
 
-def sets_for_row_order(row: MatchRow, result: MatchResult) -> tuple[int, int] | None:
-    if result.outcome_type == "W/O":
+def infer_draw_page_url(tournament_url: str) -> str:
+    tournament_url = normalize_tournament_url(tournament_url)
+    if not tournament_url:
+        return ""
+    if tournament_url.endswith("/draws"):
+        return tournament_url
+    if tournament_url.endswith("/results"):
+        return re.sub(r"/results$", "/draws", tournament_url)
+    return f"{tournament_url}/draws"
+
+
+def infer_results_page_url_from_tournament(tournament_url: str) -> str:
+    tournament_url = normalize_tournament_url(tournament_url)
+    if not tournament_url:
+        return ""
+    if tournament_url.endswith("/results"):
+        return tournament_url
+    if tournament_url.endswith("/draws"):
+        return re.sub(r"/draws$", "/results", tournament_url)
+    return f"{tournament_url}/results"
+
+
+def infer_results_page_url_from_draw(draw_page_url: str) -> str:
+    url = normalize_tournament_url(draw_page_url)
+    if not url:
+        return ""
+    if url.endswith("/results"):
+        return url
+    if url.endswith("/draws"):
+        return re.sub(r"/draws$", "/results", url)
+    return f"{url}/results"
+
+
+def make_requests_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD", "OPTIONS"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/pdf,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,it;q=0.8",
+        "Connection": "keep-alive",
+    })
+    return session
+
+
+def http_get(session: requests.Session, url: str, timeout: int = 30) -> requests.Response:
+    resp = session.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp
+
+
+def discover_pdf_url(session: requests.Session, draw_page_url: str, fallback_pdf_url: str) -> str:
+    try:
+        resp = http_get(session, draw_page_url, timeout=30)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.select("a[href]"):
+            href = a.get("href", "")
+            if "protennislive.com" in href and href.lower().endswith("mds.pdf"):
+                return href
+    except requests.RequestException as exc:
+        print(
+            f"[{utc_now_iso()}] WARN | draw page non raggiungibile, uso fallback PDF | "
+            f"url={draw_page_url} | err={exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return fallback_pdf_url
+
+
+def extract_pdf_text(pdf_bytes: bytes) -> list[str]:
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    return [(page.extract_text() or "") for page in reader.pages]
+
+
+def clean_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line and line.strip()]
+
+
+def extract_released_at(pages_text: Iterable[str]) -> str:
+    for page_text in pages_text:
+        lines = clean_lines(page_text)
+        for i, line in enumerate(lines):
+            if line == "Released" and i + 1 < len(lines):
+                return lines[i + 1]
+    return ""
+
+
+def is_score_line(text: str) -> bool:
+    text = (text or "").strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"\d{1,2}\s+\d{1,2}(?:\s+\d{1,2})*", text))
+
+
+def normalize_person_name_for_matching(name: str) -> str:
+    name = (name or "").strip().lower()
+    name = re.sub(r"\([^)]*\)", "", name)
+    name = re.sub(r"\[[^\]]+\]", "", name)
+    name = name.replace(".", " ")
+    name = re.sub(r"\s+", " ", name).strip()
+    return name
+
+
+def surname_from_name(name: str) -> str:
+    n = normalize_person_name_for_matching(name)
+    parts = n.split()
+    return parts[-1] if parts else ""
+
+
+def first_initial_from_name(name: str) -> str:
+    n = normalize_person_name_for_matching(name)
+    parts = n.split()
+    if len(parts) >= 2 and parts[0]:
+        return parts[0][0]
+    return ""
+
+
+def parse_draw_line(line: str) -> dict | None:
+    line = line.strip()
+    if not line:
+        return None
+    if is_score_line(line):
         return None
 
-    raw_sets = sets_won_from_score_raw(result.score_raw)
-    if raw_sets:
-        winner_display = ""
-        if result.winner_raw:
-            if display_matches_full(row.player_a, result.winner_raw):
-                winner_display = row.player_a
-            elif display_matches_full(row.player_b, result.winner_raw):
-                winner_display = row.player_b
-        if winner_display == row.player_a:
-            return raw_sets
-        if winner_display == row.player_b:
-            return (raw_sets[1], raw_sets[0])
+    m = re.match(r"^(\d{1,3})\s+(.*)$", line)
+    if not m:
+        m = re.match(r"^(\d{1,3})(WC|PR|Q|LL|ALT|Alt|alt)\s+(.*)$", line)
+        if m:
+            position = int(m.group(1))
+            if position < 1:
+                return None
+            rest = f"{m.group(2)} {m.group(3)}".strip()
+        else:
+            return None
+    else:
+        position = int(m.group(1))
+        if position < 1:
+            return None
+        rest = m.group(2).strip()
 
-    line_sets = sets_won_from_score_lines(result.p1_score_lines, result.p2_score_lines)
-    if line_sets:
-        row_a_is_p1 = display_matches_full(row.player_a, result.player1_raw)
-        row_b_is_p2 = display_matches_full(row.player_b, result.player2_raw)
-        if row_a_is_p1 and row_b_is_p2:
-            return line_sets
-        row_a_is_p2 = display_matches_full(row.player_a, result.player2_raw)
-        row_b_is_p1 = display_matches_full(row.player_b, result.player1_raw)
-        if row_a_is_p2 and row_b_is_p1:
-            return (line_sets[1], line_sets[0])
-    return None
+    if position > 128:
+        return None
+
+    entry_status = ""
+    seed = ""
+    country = ""
+    slot_type = "player"
+    raw_name = ""
+    display_name = ""
+
+    if rest == "Bye":
+        raw_name = rest
+        display_name = "bye"
+        slot_type = "bye"
+    elif rest.strip() == "Qualifier / Lucky Loser":
+        raw_name = rest
+        display_name = "[Q/LL]"
+        slot_type = "qualifier_or_lucky_loser"
+    elif rest.strip() == "Qualifier":
+        raw_name = rest
+        display_name = "[Q]"
+        slot_type = "qualifier"
+    else:
+        tokens = rest.split()
+        if tokens:
+            cleaned = tokens[0].replace(".", "").upper()
+            if cleaned in STATUS_LABELS:
+                entry_status = cleaned
+                tokens.pop(0)
+        if tokens and re.fullmatch(r"\d{1,2}", tokens[0]):
+            seed = tokens.pop(0)
+        if tokens and re.fullmatch(r"[A-Z]{3}", tokens[-1]):
+            country = tokens.pop()
+        raw_name = " ".join(tokens).replace(",", "").strip()
+        if not raw_name:
+            return None
+        display_name = format_name(raw_name, seed=seed, entry_status=entry_status, country=country)
+        if is_tournament_metadata(display_name):
+            display_name = "bye"
+            slot_type = "bye"
+
+    return {
+        "draw_position": position,
+        "seed": seed,
+        "entry_status": entry_status,
+        "player_name": display_name,
+        "raw_name": raw_name,
+        "country": country,
+        "slot_type": slot_type,
+    }
 
 
-def apply_results_to_rows(rows: list[MatchRow], round_results: list[MatchResult]) -> None:
-    used: set[int] = set()
-    for row in rows:
-        if row.player_a == "TBD" or row.player_b == "TBD":
+def parse_draw_positions(pages_text: list[str]) -> list[dict]:
+    rows: list[dict] = []
+    seen_positions: set[int] = set()
+    in_main_draw = False
+
+    stop_markers = {
+        "Round of 32", "Round of 16", "Quarterfinals", "Semifinals", "Final", "Winner",
+        "Last Direct Acceptance", "ATP Supervisor", "Released", "Seeded Players",
+        "Alternates/Lucky Losers", "Withdrawals", "Retirements/W.O.",
+    }
+
+    for page_text in pages_text:
+        lines = clean_lines(page_text)
+        for line in lines:
+            normalized = line.strip()
+            if normalized == "Main Draw Singles":
+                in_main_draw = True
+                continue
+            if not in_main_draw:
+                continue
+            if normalized in stop_markers:
+                in_main_draw = False
+                break
+            parsed = parse_draw_line(normalized)
+            if not parsed:
+                continue
+            pos = parsed["draw_position"]
+            if pos in seen_positions:
+                continue
+            seen_positions.add(pos)
+            rows.append(parsed)
+
+    rows.sort(key=lambda x: x["draw_position"])
+    draw_size = len(rows)
+    if draw_size not in {16, 24, 28, 32, 48, 56, 64, 96, 128}:
+        raise RuntimeError(f"Draw non supportato: {draw_size} posizioni")
+    return rows
+
+
+def classify_result_outcome(score_raw: str) -> str:
+    score_raw = (score_raw or "").strip()
+    if not score_raw:
+        return "unknown"
+    if RESULT_WALKOVER_RE.search(score_raw):
+        return "walkover"
+    if RESULT_RETIREMENT_RE.search(score_raw):
+        return "retirement"
+    return "completed"
+
+
+def parse_score_pairs_from_score_raw(score_raw: str) -> list[tuple[int, int]]:
+    score_raw = (score_raw or "").strip()
+    if not score_raw:
+        return []
+
+    # Ignora completamente i punti del tie-break: 7-6(3) -> 7-6
+    cleaned = re.sub(r"\(\d+\)", "", score_raw)
+    cleaned = cleaned.replace("–", "-").replace("—", "-")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    pairs: list[tuple[int, int]] = []
+    for token in cleaned.split():
+        m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", token)
+        if not m:
             continue
-        if row.player_b == "Bye":
-            row.winner = row.player_a
-            continue
-        if row.player_a == "Bye":
-            row.winner = row.player_b
-            continue
-        result = find_matching_result(row, round_results, used)
-        if not result:
-            continue
-        row.winner = resolve_winner_display(row, result)
-        if result.outcome_type == "W/O":
-            if row.winner == row.player_a:
-                row.participant_a_score = "W/O"
-                row.participant_b_score = ""
-            elif row.winner == row.player_b:
-                row.participant_a_score = ""
-                row.participant_b_score = "W/O"
-            continue
-        sets = sets_for_row_order(row, result)
-        if sets:
-            row.participant_a_score = str(sets[0])
-            row.participant_b_score = str(sets[1])
+        pairs.append((int(m.group(1)), int(m.group(2))))
+    return pairs
 
 
-def build_rows(slots: list[str], results_by_round: dict[str, list[MatchResult]]) -> list[MatchRow]:
-    all_rows: list[MatchRow] = []
-    current_slots = slots[:]
-    total_rounds = len(current_slots).bit_length() - 1
-    round_index = 1
-    while len(current_slots) >= 2:
-        round_key = key_from_slots_count(len(current_slots))
-        round_label = label_for_round(round_index, total_rounds)
-        rows: list[MatchRow] = []
-        for i in range(0, len(current_slots), 2):
-            player_a = current_slots[i]
-            player_b = current_slots[i + 1]
-            rows.append(MatchRow(round_label=round_label, player_a=player_a, player_b=player_b))
-        apply_results_to_rows(rows, results_by_round.get(round_key, []))
-        all_rows.extend(rows)
-        next_slots: list[str] = []
-        for row in rows:
-            if row.winner:
-                next_slots.append(row.winner)
-            elif row.player_a == "Bye":
-                next_slots.append(row.player_b)
-            elif row.player_b == "Bye":
-                next_slots.append(row.player_a)
-            else:
-                next_slots.append("TBD")
-        current_slots = next_slots
-        round_index += 1
-        if len(current_slots) == 1:
-            break
-    return all_rows
+def is_completed_set_score(a: int, b: int) -> bool:
+    if a == 6 and 0 <= b <= 4:
+        return True
+    if b == 6 and 0 <= a <= 4:
+        return True
+    if (a, b) in {(7, 5), (5, 7), (7, 6), (6, 7)}:
+        return True
+    return False
 
 
-def write_csv(rows: list[MatchRow], output_path: Path) -> None:
+def count_sets_from_pairs(pairs: list[tuple[int, int]]) -> tuple[int, int]:
+    a_sets = 0
+    b_sets = 0
+    for a, b in pairs:
+        if a > b:
+            a_sets += 1
+        elif b > a:
+            b_sets += 1
+    return a_sets, b_sets
+
+
+def format_scores_from_result(player_a: str, player_b: str, winner: str, res: dict) -> tuple[str, str]:
+    outcome = res.get("outcome_type", "unknown")
+    pairs = parse_score_pairs_from_score_raw(res.get("score_raw", ""))
+
+    res_p1 = (res.get("player1_name_raw", "") or "").strip()
+    res_p2 = (res.get("player2_name_raw", "") or "").strip()
+
+    def same_player(x: str, y: str) -> bool:
+        return normalize_person_name_for_matching(x) == normalize_person_name_for_matching(y)
+
+    def orient_pairs_to_csv(raw_pairs: list[tuple[int, int]], use_completed_only: bool = False) -> list[tuple[int, int]]:
+        if not raw_pairs:
+            return raw_pairs
+
+        # 1) Prova ad allineare usando player1/player2 del source
+        if res_p1 and res_p2:
+            if same_player(res_p1, player_a) and same_player(res_p2, player_b):
+                return raw_pairs
+            if same_player(res_p1, player_b) and same_player(res_p2, player_a):
+                return [(b, a) for a, b in raw_pairs]
+
+        # 2) Fallback: usa il winner per capire se i pair sono invertiti
+        pairs_for_check = raw_pairs
+        if use_completed_only:
+            pairs_for_check = [(a, b) for a, b in raw_pairs if is_completed_set_score(a, b)]
+
+        a_sets, b_sets = count_sets_from_pairs(pairs_for_check)
+
+        if winner == player_a and b_sets > a_sets:
+            return [(b, a) for a, b in raw_pairs]
+        if winner == player_b and a_sets > b_sets:
+            return [(b, a) for a, b in raw_pairs]
+
+        return raw_pairs
+
+    if outcome == "walkover":
+        if winner == player_a:
+            return "W/O", ""
+        if winner == player_b:
+            return "", "W/O"
+        return "", ""
+
+    if outcome == "retirement":
+        aligned_pairs = orient_pairs_to_csv(pairs, use_completed_only=True)
+
+        completed_pairs = [(a, b) for a, b in aligned_pairs if is_completed_set_score(a, b)]
+        incomplete_pairs = [(a, b) for a, b in aligned_pairs if not is_completed_set_score(a, b)]
+
+        a_sets, b_sets = count_sets_from_pairs(completed_pairs)
+
+        # Fix robusto per feed ATP incoerenti:
+        # se ci sono 2 set completi + 1 set incompleto, in un best-of-3
+        # il punteggio dopo i set completi deve essere 1-1
+        if incomplete_pairs and len(completed_pairs) == 2:
+            a_sets, b_sets = 1, 1
+
+        a_val = str(a_sets) if (completed_pairs or incomplete_pairs) else ""
+        b_val = str(b_sets) if (completed_pairs or incomplete_pairs) else ""
+
+        if winner == player_a:
+            return a_val, f"(rit.) {b_val}" if b_val else "(rit.)"
+        if winner == player_b:
+            return f"(rit.) {a_val}" if a_val else "(rit.)", b_val
+
+        return a_val, b_val
+
+    # completed / normal
+    aligned_pairs = orient_pairs_to_csv(pairs, use_completed_only=False)
+    a_sets, b_sets = count_sets_from_pairs(aligned_pairs)
+
+    a_val = str(a_sets) if aligned_pairs else ""
+    b_val = str(b_sets) if aligned_pairs else ""
+    return a_val, b_val
+
+
+def extract_json_candidates_from_html(html: str) -> list[str]:
+    candidates: list[str] = []
+    patterns = [
+        r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+        r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, html, flags=re.DOTALL | re.IGNORECASE):
+            candidates.append(m.group(1))
+    for m in re.finditer(r'(\{.*?(?:Game Set and Match|wins the match).*?\})', html, flags=re.DOTALL):
+        candidates.append(m.group(1))
+    return candidates
+
+
+def _walk_json(obj):
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _walk_json(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk_json(item)
+
+
+def dedupe_results(results: list[dict]) -> list[dict]:
+    seen = set()
+    out = []
+    for r in results:
+        key = (
+            r.get("round", ""),
+            normalize_person_name_for_matching(r.get("winner_name_raw", "")),
+            re.sub(r"\s+", " ", (r.get("score_raw", "") or "").strip()),
+            normalize_person_name_for_matching(r.get("player1_name_raw", "")),
+            normalize_person_name_for_matching(r.get("player2_name_raw", "")),
+            r.get("outcome_type", "unknown"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+def fetch_results_page(results_page_url: str, session: requests.Session | None = None) -> list[dict]:
+    session = session or make_requests_session()
+    resp = http_get(session, results_page_url, timeout=30)
+    html = resp.text
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict] = []
+
+    for candidate in extract_json_candidates_from_html(html):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        for obj in _walk_json(data):
+            if not isinstance(obj, dict):
+                continue
+            round_text = winner_name = score_raw = player1 = player2 = None
+            for key in ("round", "roundName", "Round", "matchRound"):
+                if key in obj and isinstance(obj[key], str):
+                    round_text = obj[key]
+                    break
+            for key in ("winnerName", "WinnerName", "winningPlayerName", "winner"):
+                if key in obj and isinstance(obj[key], str):
+                    winner_name = obj[key]
+                    break
+            for key in ("score", "Score", "matchScore", "result"):
+                if key in obj and isinstance(obj[key], str):
+                    score_raw = obj[key]
+                    break
+            for key in ("player1Name", "Player1Name", "homePlayerName"):
+                if key in obj and isinstance(obj[key], str):
+                    player1 = obj[key]
+                    break
+            for key in ("player2Name", "Player2Name", "awayPlayerName"):
+                if key in obj and isinstance(obj[key], str):
+                    player2 = obj[key]
+                    break
+            label = map_atp_round_to_label(round_text or "")
+            if not label:
+                continue
+            if not winner_name and not score_raw and not (player1 and player2):
+                continue
+            results.append({
+                "round": label,
+                "winner_name_raw": (winner_name or "").strip(),
+                "score_raw": (score_raw or "").strip(),
+                "player1_name_raw": (player1 or "").strip(),
+                "player2_name_raw": (player2 or "").strip(),
+                "outcome_type": classify_result_outcome(score_raw or ""),
+                "source": "results_page",
+            })
+
+    if results:
+        return dedupe_results(results)
+
+    text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+    pattern = re.compile(
+        r"(Round of 128|Round of 96|Round of 64|Round of 48|Round of 32|Round of 24|Round of 16|Quarterfinals|Semifinals|Final)"
+        r".*?Game Set and Match\s+([A-Za-zÀ-ÿ'`\-.\s]+?)\.\s+"
+        r"(?:\2)\s+wins the match\s+([0-9\-\(\)\sA-Za-z/.]+?)\s*\.",
+        re.IGNORECASE,
+    )
+    for m in pattern.finditer(text):
+        round_text = m.group(1).strip()
+        winner_name = " ".join(m.group(2).split())
+        score_raw = " ".join(m.group(3).split())
+        label = map_atp_round_to_label(round_text)
+        if not label:
+            continue
+        results.append({
+            "round": label,
+            "winner_name_raw": winner_name,
+            "score_raw": score_raw,
+            "player1_name_raw": "",
+            "player2_name_raw": "",
+            "outcome_type": classify_result_outcome(score_raw),
+            "source": "results_page",
+        })
+    return dedupe_results(results)
+
+
+def group_results_by_round(results: list[dict]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {}
+    for r in results:
+        grouped.setdefault(r["round"], []).append(r)
+    return grouped
+
+
+def resolve_winner_from_results_page(player_a: str, player_b: str, winner_full_name: str) -> str:
+    a_norm = normalize_person_name_for_matching(player_a)
+    b_norm = normalize_person_name_for_matching(player_b)
+    w_norm = normalize_person_name_for_matching(winner_full_name)
+    if a_norm and a_norm == w_norm:
+        return player_a
+    if b_norm and b_norm == w_norm:
+        return player_b
+
+    a_surname = surname_from_name(player_a)
+    b_surname = surname_from_name(player_b)
+    w_surname = surname_from_name(winner_full_name)
+    if w_surname == a_surname and w_surname != b_surname:
+        return player_a
+    if w_surname == b_surname and w_surname != a_surname:
+        return player_b
+
+    a_initial = first_initial_from_name(player_a)
+    b_initial = first_initial_from_name(player_b)
+    w_initial = first_initial_from_name(winner_full_name)
+    if w_surname == a_surname and w_initial and w_initial == a_initial and not (w_surname == b_surname and w_initial == b_initial):
+        return player_a
+    if w_surname == b_surname and w_initial and w_initial == b_initial and not (w_surname == a_surname and w_initial == a_initial):
+        return player_b
+    return ""
+
+
+def match_result_to_players(player_a: str, player_b: str, res: dict) -> bool:
+    p1 = normalize_person_name_for_matching(res.get("player1_name_raw", ""))
+    p2 = normalize_person_name_for_matching(res.get("player2_name_raw", ""))
+    a = normalize_person_name_for_matching(player_a)
+    b = normalize_person_name_for_matching(player_b)
+    if p1 and p2:
+        return {a, b} == {p1, p2}
+    winner = res.get("winner_name_raw", "")
+    return bool(resolve_winner_from_results_page(player_a, player_b, winner))
+
+
+def build_match_rows(positions: list[dict], round_results: dict[str, list[dict]]) -> list[dict]:
+    current = [{"name": p["player_name"], "slot_type": p["slot_type"]} for p in positions]
+    match_rows: list[dict] = []
+    initial_size = len(current)
+
+    while len(current) > 1:
+        round_size = len(current) // 2
+        round_label = get_round_label(round_size, initial_size)
+        next_round = []
+        results_for_round = round_results.get(round_label, [])
+        used = [False] * len(results_for_round)
+
+        for i in range(0, len(current), 2):
+            a_name = current[i]["name"]
+            b_name = current[i + 1]["name"]
+            winner = ""
+            a_sets = ""
+            b_sets = ""
+
+            if a_name == "bye" and b_name and b_name != "bye":
+                winner = b_name
+            elif b_name == "bye" and a_name and a_name != "bye":
+                winner = a_name
+            elif a_name == "bye" and b_name == "bye":
+                winner = ""
+
+            if not winner:
+                for idx, res in enumerate(results_for_round):
+                    if used[idx]:
+                        continue
+                    if not match_result_to_players(a_name, b_name, res):
+                        continue
+                    candidate_winner = resolve_winner_from_results_page(
+                        a_name, b_name, res.get("winner_name_raw", "")
+                    )
+                    if not candidate_winner:
+                        continue
+                    used[idx] = True
+                    winner = candidate_winner
+                    a_sets, b_sets = format_scores_from_result(a_name, b_name, winner, res)
+                    break
+
+            match_rows.append({
+                "Round": round_label,
+                "Player A": a_name,
+                "Player B": b_name,
+                "Winner": winner,
+                "Participant A score": a_sets,
+                "Participant B score": b_sets,
+            })
+            next_round.append({"name": winner, "slot_type": "player" if winner else "unknown"})
+        current = next_round
+
+    return match_rows
+
+
+def csv_bytes(rows: list[dict]) -> bytes:
+    fieldnames = ["Round", "Player A", "Player B", "Winner", "Participant A score", "Participant B score"]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def resolve_runtime_urls(
+    tournament_url: str,
+    draw_page_url: str,
+    results_page_url: str,
+    tournament_id: str,
+    year: int,
+) -> tuple[str, str, str, str]:
+    tournament_url = normalize_tournament_url(tournament_url or DEFAULT_TOURNAMENT_URL)
+    draw_page_url = normalize_tournament_url(draw_page_url or DEFAULT_DRAW_PAGE)
+    results_page_url = normalize_tournament_url(results_page_url or DEFAULT_RESULTS_PAGE)
+    tournament_id = (tournament_id or DEFAULT_TOURNAMENT_ID or "").strip()
+
+    if tournament_url:
+        if not draw_page_url:
+            draw_page_url = infer_draw_page_url(tournament_url)
+        if not results_page_url:
+            results_page_url = infer_results_page_url_from_tournament(tournament_url)
+
+    if not draw_page_url and results_page_url:
+        draw_page_url = re.sub(r"/results$", "/draws", results_page_url)
+    if not results_page_url and draw_page_url:
+        results_page_url = infer_results_page_url_from_draw(draw_page_url)
+    if not draw_page_url:
+        raise ValueError("Devi specificare --tournament-url oppure --draw-page")
+    if not tournament_id:
+        tournament_id = infer_tournament_id_from_url(draw_page_url)
+    if not tournament_id and tournament_url:
+        tournament_id = infer_tournament_id_from_url(tournament_url)
+    if not tournament_id:
+        raise ValueError("Impossibile ricavare tournament_id dall'URL. Passa --tournament-id")
+    fallback_pdf_url = DEFAULT_FALLBACK_PDF.format(year=year, tournament_id=tournament_id)
+    return draw_page_url, results_page_url, tournament_id, fallback_pdf_url
+
+
+def fetch_and_build_rows(draw_page_url: str, results_page_url: str, fallback_pdf_url: str) -> tuple[list[dict], dict]:
+    session = make_requests_session()
+    pdf_url = discover_pdf_url(session, draw_page_url, fallback_pdf_url)
+    pdf_resp = http_get(session, pdf_url, timeout=60)
+    pages_text = extract_pdf_text(pdf_resp.content)
+    released_at = extract_released_at(pages_text)
+    positions = parse_draw_positions(pages_text)
+    results_list = fetch_results_page(results_page_url, session=session)
+    round_results = group_results_by_round(results_list)
+    rows = build_match_rows(positions, round_results)
+    meta = {
+        "source_draw_page": draw_page_url,
+        "source_pdf": pdf_url,
+        "source_results_page": results_page_url,
+        "released_at": released_at,
+        "fetched_at": utc_now_iso(),
+        "positions": len(positions),
+        "matches": len(rows),
+        "results_found": len(results_list),
+    }
+    return rows, meta
+
+
+def write_csv_if_changed(output_path: Path, data: bytes) -> bool:
+    if output_path.exists() and output_path.read_bytes() == data:
+        return False
+    output_path.write_bytes(data)
+    return True
+
+
+def run_once(output_path: Path, tournament_url: str, draw_page_url: str, results_page_url: str, tournament_id: str, year: int) -> bool:
+    draw_page_url, results_page_url, tournament_id, fallback_pdf_url = resolve_runtime_urls(
+        tournament_url=tournament_url,
+        draw_page_url=draw_page_url,
+        results_page_url=results_page_url,
+        tournament_id=tournament_id,
+        year=year,
+    )
+    rows, meta = fetch_and_build_rows(draw_page_url, results_page_url, fallback_pdf_url)
+    data = csv_bytes(rows)
+    changed = write_csv_if_changed(output_path, data)
+    status = "AGGIORNATO" if changed else "NESSUNA MODIFICA"
+    print(
+        f"[{utc_now_iso()}] {status} | file={output_path} | matches={meta['matches']} | "
+        f"results_found={meta['results_found']} | released_at={meta['released_at'] or 'n/d'} | "
+        f"sha256={sha256(data)[:12]} | pdf={meta['source_pdf']}",
+        flush=True,
+    )
+    return changed
+
+
+class RetirementWalkoverTests(unittest.TestCase):
+    def test_retirement_incomplete_third_set_keeps_one_one(self) -> None:
+        res = {
+            "outcome_type": "retirement",
+            "score_raw": "6-3 6-3 3-0 RET",
+            "player1_name_raw": "L. Ambrogi [Alt]",
+            "player2_name_raw": "S. Rodriguez Taverna",
+        }
+        a_score, b_score = format_scores_from_result(
+            "S. Rodriguez Taverna",
+            "L. Ambrogi [Alt]",
+            "L. Ambrogi [Alt]",
+            res,
+        )
+        self.assertEqual(a_score, "(rit.) 1")
+        self.assertEqual(b_score, "1")
+
+    def test_retirement_aligned_score_keeps_one_one(self) -> None:
+        res = {
+            "outcome_type": "retirement",
+            "score_raw": "6-3 3-6 0-3 RET",
+            "player1_name_raw": "S. Rodriguez Taverna",
+            "player2_name_raw": "L. Ambrogi [Alt]",
+        }
+        a_score, b_score = format_scores_from_result(
+            "S. Rodriguez Taverna",
+            "L. Ambrogi [Alt]",
+            "L. Ambrogi [Alt]",
+            res,
+        )
+        self.assertEqual(a_score, "(rit.) 1")
+        self.assertEqual(b_score, "1")
+
+    def test_walkover_winner_player_a(self) -> None:
+        res = {"outcome_type": "walkover", "score_raw": "W/O", "player1_name_raw": "A. Player", "player2_name_raw": "B. Player"}
+        a_score, b_score = format_scores_from_result("A. Player", "B. Player", "A. Player", res)
+        self.assertEqual(a_score, "W/O")
+        self.assertEqual(b_score, "")
+
+    def test_tiebreak_score_is_counted_as_2_1(self) -> None:
+        self.assertEqual(parse_score_pairs_from_score_raw("7-6(3) 6-7(5) 6-3"), [(7, 6), (6, 7), (6, 3)])
+        self.assertEqual(count_sets_from_pairs(parse_score_pairs_from_score_raw("7-6(3) 6-7(5) 6-3")), (2, 1))
+
+    def test_walkover_winner_player_b(self) -> None:
+        res = {"outcome_type": "walkover", "score_raw": "W/O", "player1_name_raw": "A. Player", "player2_name_raw": "B. Player"}
+        a_score, b_score = format_scores_from_result("A. Player", "B. Player", "B. Player", res)
+        self.assertEqual(a_score, "")
+        self.assertEqual(b_score, "W/O")
+
+    def test_classify_result_outcome(self) -> None:
+        self.assertEqual(classify_result_outcome("6-3 3-0 RET"), "retirement")
+        self.assertEqual(classify_result_outcome("W/O"), "walkover")
+        self.assertEqual(classify_result_outcome("6-4 7-6(5)"), "completed")
+
+    def test_completed_match_scores_follow_csv_order():
+        res = {
+            "score_raw": "6-2 6-3",
+            "outcome_type": "completed",
+            "player1_name_raw": "J. Varillas",
+            "player2_name_raw": "M. Kestelboim [Alt]",
+        }
+        a_score, b_score = format_scores_from_result(
+            "M. Kestelboim [Alt]",
+            "J. Varillas",
+            "J. Varillas",
+            res,
+        )
+        assert a_score == "0"
+        assert b_score == "2"
+
+def run_tests() -> int:
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(RetirementWalkoverTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Genera un CSV match-by-match dal draw ATP ufficiale.")
+    parser.add_argument("--output", default="matches_format.csv", help="Percorso del file CSV da creare/aggiornare")
+    parser.add_argument("--tournament-url", default=DEFAULT_TOURNAMENT_URL, help="URL base del torneo")
+    parser.add_argument("--draw-page", default=DEFAULT_DRAW_PAGE, help="URL della pagina ATP del draw")
+    parser.add_argument("--results-page", default=DEFAULT_RESULTS_PAGE, help="URL della pagina ATP Results")
+    parser.add_argument("--tournament-id", default=DEFAULT_TOURNAMENT_ID, help="ID torneo ATP/Challenger")
+    parser.add_argument("--year", type=int, default=datetime.now().year, help="Anno usato per il PDF fallback ProTennisLive")
+    parser.add_argument("--watch", action="store_true", help="Resta in esecuzione e aggiorna il CSV a intervalli regolari")
+    parser.add_argument("--interval", type=int, default=1800, help="Intervallo in secondi in modalità --watch")
+    parser.add_argument("--run-tests", action="store_true", help="Esegue i test automatici RET/W/O ed esce")
+    args = parser.parse_args()
+
+    if args.run_tests:
+        return run_tests()
+
+    output_path = Path(args.output).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "Round",
-            "Player A",
-            "Player B",
-            "Winner",
-            "Participant A score",
-            "Participant B score",
-        ])
-        for row in rows:
-            writer.writerow([
-                row.round_label,
-                row.player_a,
-                row.player_b,
-                row.winner,
-                row.participant_a_score,
-                row.participant_b_score,
-            ])
 
+    if not args.watch:
+        run_once(output_path, args.tournament_url, args.draw_page, args.results_page, args.tournament_id, args.year)
+        return 0
 
-def run_once(output: Path, draws_url: str, results_url: str, debug: bool = False) -> int:
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
-
-    draws_html = fetch_html(draws_url, session)
-    results_html = fetch_html(results_url, session)
-    draw_lines = html_to_lines(draws_html)
-    result_lines = html_to_lines(results_html)
-
-    slots = parse_draw_slots(draw_lines, debug=debug)
-    results_by_round = parse_results_blocks(result_lines, debug=debug)
-    rows = build_rows(slots, results_by_round)
-    write_csv(rows, output)
-    return 0
-
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build ATP tournament match CSV without using the draw PDF")
-    parser.add_argument("--output", required=True, help="Output CSV path")
-    parser.add_argument("--draws-url", default=DEFAULT_DRAWS_URL, help="ATP draws page URL")
-    parser.add_argument("--results-url", default=DEFAULT_RESULTS_URL, help="ATP results page URL")
-    parser.add_argument("--debug", action="store_true", help="Print parser diagnostics to stderr")
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
-    try:
-        return run_once(Path(args.output), args.draws_url, args.results_url, debug=args.debug)
-    except Exception as exc:  # pragma: no cover
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
+    while True:
+        try:
+            run_once(output_path, args.tournament_url, args.draw_page, args.results_page, args.tournament_id, args.year)
+        except KeyboardInterrupt:
+            return 130
+        except Exception as exc:
+            print(f"[{utc_now_iso()}] ERRORE | {exc}", file=sys.stderr, flush=True)
+        time.sleep(max(30, args.interval))
 
 
 if __name__ == "__main__":
