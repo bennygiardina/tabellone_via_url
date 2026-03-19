@@ -62,8 +62,7 @@ class MatchRow:
 @dataclass
 class ResultMatch:
     round_label: str
-    player1_full_name: str
-    player2_full_name: str
+    block_text: str
     winner_full_name: str
     raw_score: str
     is_walkover: bool
@@ -277,11 +276,8 @@ def available_round_codes(draw_html: str, first_round_code: str) -> List[str]:
 
 def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
     """
-    Costruisce match dei results per round.
-    Ogni match viene identificato da:
-    - 2 giocatori completi
-    - winner
-    - score grezzo
+    Estrae i match dai results come blocchi di testo completi.
+    Non prova a identificare player1/player2 qui: lo farà dopo.
     """
     soup = BeautifulSoup(results_html, "html.parser")
     text = soup.get_text("\n", strip=True)
@@ -303,21 +299,6 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
 
         block_text = "\n".join(current_block)
 
-        # Cerca i due giocatori nella forma:
-        # "First Last" su linee consecutive nel blocco
-        candidate_player_lines = []
-        for line in current_block:
-            if re.match(r"^[A-Z][a-zA-Z'`\-\.]+(?:\s+[A-Z][a-zA-Z'`\-\.]+)+$", line):
-                candidate_player_lines.append(line)
-
-        player1_full_name = ""
-        player2_full_name = ""
-
-        # In molti blocchi ATP i primi due nomi completi sono i due giocatori
-        if len(candidate_player_lines) >= 2:
-            player1_full_name = candidate_player_lines[0]
-            player2_full_name = candidate_player_lines[1]
-
         winner_match = re.search(r"Game Set and Match\s+(.+?)\.", block_text, flags=re.I)
         walkover_match = re.search(r"Winner:\s*(.+?)\s+by\s+Walkover", block_text, flags=re.I)
 
@@ -328,11 +309,9 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
 
         if winner_match:
             winner_full_name = normalize_space(winner_match.group(1))
-
             score_match = re.search(r"wins the match\s+(.+?)(?:\.|$)", block_text, flags=re.I)
             if score_match:
                 raw_score = normalize_space(score_match.group(1))
-
             is_retirement = "RET" in raw_score.upper()
             is_walkover = "W/O" in raw_score.upper() or "WALKOVER" in raw_score.upper()
 
@@ -341,12 +320,11 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
             raw_score = "W/O"
             is_walkover = True
 
-        if winner_full_name and player1_full_name and player2_full_name:
+        if winner_full_name:
             results_by_round[current_round].append(
                 ResultMatch(
                     round_label=current_round,
-                    player1_full_name=player1_full_name,
-                    player2_full_name=player2_full_name,
+                    block_text=block_text,
                     winner_full_name=winner_full_name,
                     raw_score=raw_score,
                     is_walkover=is_walkover,
@@ -374,6 +352,7 @@ def extract_result_matches(results_html: str) -> Dict[str, List[ResultMatch]]:
 
         current_block.append(line)
 
+        # chiude il match appena compare la frase finale
         if "Game Set and Match" in line or line.startswith("Winner:"):
             flush_block()
 
@@ -425,6 +404,46 @@ def winner_matches_player(winner_full_name: str, player_display_name: str) -> bo
         return False
 
     return tokens[0][0].lower() == initial
+
+def display_name_to_regex(name: str) -> Optional[re.Pattern[str]]:
+    """
+    Converte un nome del draw in regex per cercarlo nei results.
+    Esempi:
+    - T. Atmane -> Theo/Thomas... Atmane
+    - B. van de Zandschulp -> Botic ... van de Zandschulp
+    - Shimabukuro S. -> Shintaro Shimabukuro
+    """
+    base = remove_labels(name)
+    parts = base.split()
+    if not parts:
+        return None
+
+    # formato invertito: "Shimabukuro S."
+    if len(parts) == 2 and parts[-1].endswith("."):
+        surname = re.escape(parts[0])
+        initial = re.escape(parts[-1][0])
+        pattern = rf"\b{initial}[a-zA-Z'`\-\.]*\s+{surname}\b"
+        return re.compile(pattern, re.I)
+
+    # formato standard: "T. Atmane" / "B. van de Zandschulp"
+    if parts[0].endswith("."):
+        initial = re.escape(parts[0][0])
+        surname = re.escape(" ".join(parts[1:])).replace(r"\ ", r"\s+")
+        pattern = rf"\b{initial}[a-zA-Z'`\-\.]*\s+{surname}\b"
+        return re.compile(pattern, re.I)
+
+    return None
+
+
+def result_block_matches_row(result_match: ResultMatch, row: MatchRow) -> bool:
+    regex_a = display_name_to_regex(row.player_a)
+    regex_b = display_name_to_regex(row.player_b)
+
+    if not regex_a or not regex_b:
+        return False
+
+    text = result_match.block_text
+    return bool(regex_a.search(text) and regex_b.search(text))    
 
 def normalize_for_matching(name: str) -> str:
     return normalize_space(name).lower()
@@ -539,36 +558,50 @@ def overlay_results_on_round_rows(
 ) -> List[MatchRow]:
     round_label = DRAW_TO_RESULTS_ROUND[round_code]
     result_matches = results_by_round.get(round_label, [])
+    used_indexes = set()
 
-    # Solo i match reali vanno presi dai results.
-    real_rows = [row for row in round_rows if row.player_a != "bye" and row.player_b != "bye"]
+    for row in round_rows:
+        # bye già gestiti dal draw
+        if row.player_a == "bye" or row.player_b == "bye":
+            continue
 
-    if len(real_rows) > len(result_matches):
-        raise ValueError(
-            f"Nei results ho trovato solo {len(result_matches)} match per {round_code}, "
-            f"ma nel draw ci sono {len(real_rows)} match reali."
-        )
+        matched_result = None
+        matched_index = None
 
-    for row, result_match in zip(real_rows, result_matches):
+        for idx, result_match in enumerate(result_matches):
+            if idx in used_indexes:
+                continue
+
+            if result_block_matches_row(result_match, row):
+                matched_result = result_match
+                matched_index = idx
+                break
+
+        if matched_result is None:
+            raise ValueError(
+                f"Impossibile trovare nei results il match per "
+                f"'{row.player_a}' vs '{row.player_b}' in {round_code}"
+            )
+
         winner = ""
-
-        if winner_matches_player(result_match.winner_full_name, row.player_a):
+        if winner_matches_player(matched_result.winner_full_name, row.player_a):
             winner = row.player_a
             winner_is_a = True
-        elif winner_matches_player(result_match.winner_full_name, row.player_b):
+        elif winner_matches_player(matched_result.winner_full_name, row.player_b):
             winner = row.player_b
             winner_is_a = False
         else:
             raise ValueError(
-                f"Impossibile associare winner '{result_match.winner_full_name}' "
+                f"Impossibile associare winner '{matched_result.winner_full_name}' "
                 f"a '{row.player_a}' / '{row.player_b}' in {round_code}"
             )
 
-        score_a, score_b = convert_raw_score_to_csv_scores(result_match.raw_score, winner_is_a)
+        score_a, score_b = convert_raw_score_to_csv_scores(matched_result.raw_score, winner_is_a)
 
         row.winner = winner
         row.participant_a_score = score_a
         row.participant_b_score = score_b
+        used_indexes.add(matched_index)
 
     return round_rows
 
