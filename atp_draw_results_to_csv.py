@@ -266,6 +266,26 @@ def build_player_row(stats_item: Tag) -> Optional[PlayerRow]:
         winner_marker=winner_marker,
     )
 
+def score_item_has_number(score_item: Tag) -> bool:
+    text = normalize_space(score_item.get_text(" ", strip=True))
+    return bool(re.search(r"\d", text))
+
+
+def draw_item_is_structural_walkover(draw_item: Tag, player_a: PlayerRow, player_b: PlayerRow) -> bool:
+    if player_a.display_name == "bye" or player_b.display_name == "bye":
+        return False
+
+    score_items = draw_item.select("div.score-item")
+    if len(score_items) != 2:
+        return False
+
+    if any(score_item_has_number(score_item) for score_item in score_items):
+        return False
+
+    return (
+        (player_a.winner_marker and not player_b.winner_marker)
+        or (player_b.winner_marker and not player_a.winner_marker)
+    )
 
 def extract_round_player_rows(draw_html: str, round_code: str) -> List[PlayerRow]:
     expected_count = ROUND_NAME_COUNTS[round_code]
@@ -365,7 +385,12 @@ def determine_winner(
     return ""
 
 
-def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: PlayerRow) -> MatchRow:
+def build_match_row_from_pair(
+    round_code: str,
+    player_a: PlayerRow,
+    player_b: PlayerRow,
+    structural_walkover: bool = False,
+) -> MatchRow:
     # bye
     if player_a.display_name == "bye" and player_b.display_name != "bye":
         return MatchRow(
@@ -387,32 +412,31 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
             participant_b_score="",
         )
 
-    # walkover senza game
-    if (player_a.has_wo or player_b.has_wo) and not player_a.score_values and not player_b.score_values:
-        if player_a.winner_marker and not player_b.winner_marker:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=player_a.display_name,
-                participant_a_score="W/O",
-                participant_b_score="",
-            )
-        if player_b.winner_marker and not player_a.winner_marker:
-            return MatchRow(
-                round_code=round_code,
-                player_a=player_a.display_name,
-                player_b=player_b.display_name,
-                winner=player_b.display_name,
-                participant_a_score="",
-                participant_b_score="W/O",
-            )
-
     a_sets, b_sets = count_complete_sets(player_a.score_values, player_b.score_values)
     winner = determine_winner(player_a, player_b, a_sets, b_sets)
 
-    # ritiro dedotto:
-    # ultimo set incompleto + winner marker
+    # walkover dedotto dalla struttura HTML del draw-item:
+    # 2 score-item, entrambi senza numeri, nessun bye, un solo checkmark
+    if structural_walkover and winner:
+        if winner == player_a.display_name:
+            return MatchRow(
+                round_code=round_code,
+                player_a=player_a.display_name,
+                player_b=player_b.display_name,
+                winner=winner,
+                participant_a_score="W/O",
+                participant_b_score="",
+            )
+        return MatchRow(
+            round_code=round_code,
+            player_a=player_a.display_name,
+            player_b=player_b.display_name,
+            winner=winner,
+            participant_a_score="",
+            participant_b_score="W/O",
+        )
+
+    # ritiro dedotto: ultimo set incompleto
     if (
         player_a.display_name != "bye"
         and player_b.display_name != "bye"
@@ -437,7 +461,7 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
                 participant_b_score=str(b_sets),
             )
 
-    # ritiro con label esplicita RET nel testo
+    # ritiro con label esplicita RET
     has_ret = player_a.has_ret or player_b.has_ret
     if has_ret:
         if winner == player_a.display_name:
@@ -459,8 +483,13 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
                 participant_b_score=str(b_sets),
             )
 
-    # walkover anche senza marker esplicito: se non ci sono punteggi completi ma c'è un winner
-    if (player_a.has_wo or player_b.has_wo) and winner:
+    # walkover con label esplicita W/O nel testo
+    if (
+        player_a.display_name != "bye"
+        and player_b.display_name != "bye"
+        and (player_a.has_wo or player_b.has_wo)
+        and winner
+    ):
         if winner == player_a.display_name:
             return MatchRow(
                 round_code=round_code,
