@@ -1,15 +1,15 @@
 Round,Player A,Player B,Winner,Participant A score,Participant B score
 R128,C. Alcaraz [1],bye,C. Alcaraz [1],,
 R128,T. Atmane,G. Dimitrov,G. Dimitrov,1,2
-R128,J. Cerundolo,B. van de Zandschulp,J. Cerundolo,3,1
+R128,J. Cerundolo,B. van de Zandschulp,J. Cerundolo,2,1
 R128,bye,A. Rinderknech [26],A. Rinderknech [26],,
 R128,V. Vacherot [24],bye,V. Vacherot [24],,
-R128,N. Borges,E. Nava,N. Borges,1,1
+R128,N. Borges,E. Nava,N. Borges,2,0
 R128,A. Shevchenko,S. Shimabukuro [Q],A. Shevchenko,2,1
 R128,bye,C. Ruud [13],C. Ruud [13],,
 R128,A. Bublik [10],bye,A. Bublik [10],,
 R128,M. Zheng [WC],V. Kopriva [LL],V. Kopriva [LL],0,2
-R128,F. Maestrelli [Q],R. Hijikata [Q],R. Hijikata [Q],0,1
+R128,F. Maestrelli [Q],R. Hijikata [Q],R. Hijikata [Q],0,2
 R128,bye,L. Darderi [20],L. Darderi [20],,
 R128,C. Norrie [27],bye,C. Norrie [27],,
 R128,M. Arnaldi,M. McDonald [Q],M. McDonald [Q],0,2
@@ -21,7 +21,7 @@ R128,H. Hurkacz,A. Kovacevic,A. Kovacevic,0,2
 R128,bye,C. Moutet [31],C. Moutet [31],,
 R128,F. Cerundolo [19],bye,F. Cerundolo [19],,
 R128,V. Royer,B. Bonzi [Q],B. Bonzi [Q],0,2
-R128,F. Marozsan,R. Bautista Agut,R. Bautista Agut,1,1
+R128,F. Marozsan,R. Bautista Agut,R. Bautista Agut,1,2
 R128,bye,J. Draper [14],J. Draper [14],,
 R128,D. Medvedev [11],bye,D. Medvedev [11],,
 R128,A. Tabilo,R. Jodar [WC],A. Tabilo,2,0
@@ -33,10 +33,10 @@ R128,J. Fearnley,D. Dzumhur,J. Fearnley,2,0
 R128,bye,T. Fritz [7],T. Fritz [7],,
 R128,L. Musetti [5],bye,L. Musetti [5],,
 R128,M. Fucsovics,C. O'Connell [Q],M. Fucsovics,2,0
-R128,D. Prizmic [Q],T. Schoolkate [Q],D. Prizmic [Q],2,0
+R128,D. Prizmic [Q],T. Schoolkate [Q],D. Prizmic [Q],2,1
 R128,bye,A. Fils [30],A. Fils [30],,
 R128,A. Rublev [17],bye,A. Rublev [17],,
-R128,M. Bellucci,G. Diallo,G. Diallo,0,1
+R128,M. Bellucci,G. Diallo,G. Diallo,0,2
 R128,G. Monfils [WC],A. Galarneau [Q],G. Monfils [WC],2,0
 R128,bye,F. Auger-Aliassime [9],F. Auger-Aliassime [9],,
 R128,F. Cobolli [15],bye,F. Cobolli [15],,
@@ -44,7 +44,7 @@ R128,D. Altmaier,M. Kecmanovic,M. Kecmanovic,0,1
 R128,J. Brooksby,A. Popyrin,J. Brooksby,2,0
 R128,bye,F. Tiafoe [21],F. Tiafoe [21],,
 R128,B. Nakashima [28],bye,B. Nakashima [28],,
-R128,C. Ugo Carabelli,M. Damm [WC],C. Ugo Carabelli,1,0
+R128,C. Ugo Carabelli,M. Damm [WC],C. Ugo Carabelli,2,0
 R128,M. Berrettini,A. Mannarino,M. Berrettini,2,1
 R128,bye,A. Zverev [4],A. Zverev [4],,
 R128,B. Shelton [8],bye,B. Shelton [8],,
@@ -52,7 +52,7 @@ R128,R. Opelka,E. Quinn,R. Opelka,2,0
 R128,Q. Halys,A. Walton,A. Walton,0,2
 R128,bye,L. Tien [25],L. Tien [25],,
 R128,A. Davidovich Fokina [18],bye,A. Davidovich Fokina [18],,
-R128,Z. Svajda [WC],M. Cilic,Z. Svajda [WC],1,0
+R128,Z. Svajda [WC],M. Cilic,Z. Svajda [WC],2,0
 R128,M. Navone,M. Giron,M. Giron,1,2
 R128,bye,J. Mensik [12],J. Mensik [12],,
 R128,K. Khachanov [16],bye,K. Khachanov [16],,
@@ -78,36 +78,36 @@ R64,R. Bautista Agut,J. Draper [14],J. Draper [14],1,2
 R64,D. Medvedev [11],A. Tabilo,D. Medvedev [11],2,0
 R64,S. Baez,J. Lehecka [22],S. Baez,2,0
 R64,U. Humbert [32],A. Michelsen,A. Michelsen,1,2
-R64,J. Fearnley,T. Fritz [7],T. Fritz [7],1,1
+R64,J. Fearnley,T. Fritz [7],T. Fritz [7],1,2
 R64,L. Musetti [5],M. Fucsovics,M. Fucsovics,0,2
 R64,D. Prizmic [Q],A. Fils [30],A. Fils [30],0,1
-R64,A. Rublev [17],G. Diallo,G. Diallo,2,2
-R64,G. Monfils [WC],F. Auger-Aliassime [9],F. Auger-Aliassime [9],1,1
+R64,A. Rublev [17],G. Diallo,G. Diallo,1,2
+R64,G. Monfils [WC],F. Auger-Aliassime [9],F. Auger-Aliassime [9],1,2
 R64,F. Cobolli [15],M. Kecmanovic,F. Cobolli [15],2,1
 R64,J. Brooksby,F. Tiafoe [21],F. Tiafoe [21],0,2
 R64,B. Nakashima [28],C. Ugo Carabelli,B. Nakashima [28],2,0
 R64,M. Berrettini,A. Zverev [4],A. Zverev [4],0,2
-R64,B. Shelton [8],R. Opelka,B. Shelton [8],2,2
+R64,B. Shelton [8],R. Opelka,B. Shelton [8],2,1
 R64,A. Walton,L. Tien [25],L. Tien [25],0,2
 R64,A. Davidovich Fokina [18],Z. Svajda [WC],A. Davidovich Fokina [18],2,0
 R64,M. Giron,J. Mensik [12],J. Mensik [12],0,2
-R64,K. Khachanov [16],J. Fonseca,J. Fonseca,2,1
+R64,K. Khachanov [16],J. Fonseca,J. Fonseca,1,2
 R64,Z. Bergs,T. Paul [23],T. Paul [23],0,2
 R64,T. Etcheverry [29],D. Shapovalov,D. Shapovalov,1,2
 R64,D. Svrcina [Q],J. Sinner [2],J. Sinner [2],0,2
 R32,C. Alcaraz [1],A. Rinderknech [26],C. Alcaraz [1],2,1
 R32,V. Vacherot [24],C. Ruud [13],C. Ruud [13],1,2
-R32,A. Bublik [10],R. Hijikata [Q],R. Hijikata [Q],2,2
+R32,A. Bublik [10],R. Hijikata [Q],R. Hijikata [Q],1,2
 R32,C. Norrie [27],A. de Minaur [6],C. Norrie [27],2,0
 R32,N. Djokovic [3],A. Kovacevic,N. Djokovic [3],2,1
 R32,F. Cerundolo [19],J. Draper [14],J. Draper [14],0,2
 R32,D. Medvedev [11],S. Baez,D. Medvedev [11],2,0
 R32,A. Michelsen,T. Fritz [7],A. Michelsen,2,0
 R32,M. Fucsovics,A. Fils [30],A. Fils [30],0,2
-R32,G. Diallo,F. Auger-Aliassime [9],F. Auger-Aliassime [9],1,1
+R32,G. Diallo,F. Auger-Aliassime [9],F. Auger-Aliassime [9],1,2
 R32,F. Cobolli [15],F. Tiafoe [21],F. Tiafoe [21],0,2
-R32,B. Nakashima [28],A. Zverev [4],A. Zverev [4],1,1
-R32,B. Shelton [8],L. Tien [25],L. Tien [25],0,1
+R32,B. Nakashima [28],A. Zverev [4],A. Zverev [4],1,2
+R32,B. Shelton [8],L. Tien [25],L. Tien [25],1,2
 R32,A. Davidovich Fokina [18],J. Mensik [12],A. Davidovich Fokina [18],2,1
 R32,J. Fonseca,T. Paul [23],J. Fonseca,2,0
 R32,D. Shapovalov,J. Sinner [2],J. Sinner [2],0,2
