@@ -269,11 +269,15 @@ def build_player_row(stats_item: Tag) -> Optional[PlayerRow]:
 
 def extract_round_player_rows(draw_html: str, round_code: str) -> List[PlayerRow]:
     expected_count = ROUND_NAME_COUNTS[round_code]
-    round_fragment = slice_draw_html_for_round(draw_html, round_code)
+
+    try:
+        round_fragment = slice_draw_html_for_round(draw_html, round_code)
+    except ValueError:
+        return []
+
     soup = BeautifulSoup(round_fragment, "html.parser")
 
     rows: List[PlayerRow] = []
-    seen_names: List[str] = []
 
     for stats_item in soup.select("div.stats-item"):
         player_row = build_player_row(stats_item)
@@ -284,17 +288,14 @@ def extract_round_player_rows(draw_html: str, round_code: str) -> List[PlayerRow
             continue
 
         rows.append(player_row)
-        seen_names.append(player_row.display_name)
 
         if len(rows) == expected_count:
             break
 
+    # Se il round non contiene abbastanza giocatori/match, lo consideriamo non disponibile.
+    # In questo caso il CSV deve rimanere vuoto per quel turno, senza alzare errori.
     if len(rows) != expected_count:
-        preview = ", ".join(seen_names[:20])
-        raise ValueError(
-            f"Estratti {len(rows)} nomi per {round_code}, attesi {expected_count}. "
-            f"Primi nomi letti: {preview}"
-        )
+        return []
 
     return rows
 
@@ -492,6 +493,20 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
 def build_round_rows_from_draw(draw_html: str, round_code: str) -> List[MatchRow]:
     player_rows = extract_round_player_rows(draw_html, round_code)
 
+    expected_matches = ROUND_NAME_COUNTS[round_code] // 2
+    if not player_rows:
+        return [
+            MatchRow(
+                round_code=round_code,
+                player_a="",
+                player_b="",
+                winner="",
+                participant_a_score="",
+                participant_b_score="",
+            )
+            for _ in range(expected_matches)
+        ]
+
     match_rows: List[MatchRow] = []
     for i in range(0, len(player_rows), 2):
         match_rows.append(build_match_row_from_pair(round_code, player_rows[i], player_rows[i + 1]))
@@ -533,21 +548,44 @@ def export_csv(rows: List[MatchRow], output_path: str) -> None:
             ])
 
 
+def propagate_winners_to_next_round(round_rows_map: dict[str, List[MatchRow]], rounds: List[str]) -> None:
+    for prev_round_code, next_round_code in zip(rounds, rounds[1:]):
+        prev_rows = round_rows_map.get(prev_round_code, [])
+        next_rows = round_rows_map.get(next_round_code, [])
+
+        if not prev_rows or not next_rows:
+            continue
+
+        propagated_winners = [row.winner for row in prev_rows]
+
+        for match_idx, next_row in enumerate(next_rows):
+            winner_a_idx = match_idx * 2
+            winner_b_idx = winner_a_idx + 1
+
+            next_row.player_a = propagated_winners[winner_a_idx] if winner_a_idx < len(propagated_winners) else ""
+            next_row.player_b = propagated_winners[winner_b_idx] if winner_b_idx < len(propagated_winners) else ""
+
+
 def build_full_tournament_csv_from_draw(draw_url: str, output_csv: str) -> None:
     draw_html = fetch_html(draw_url)
     first_round_code = detect_first_round_code(draw_html)
     rounds = available_round_codes(draw_html, first_round_code)
 
+    round_rows_map: dict[str, List[MatchRow]] = {}
+    for round_code in rounds:
+        round_rows_map[round_code] = build_round_rows_from_draw(draw_html, round_code)
+
+    propagate_winners_to_next_round(round_rows_map, rounds)
+
     all_rows: List[MatchRow] = []
     for round_code in rounds:
-        round_rows = build_round_rows_from_draw(draw_html, round_code)
-        all_rows.extend(round_rows)
+        all_rows.extend(round_rows_map[round_code])
 
     export_csv(all_rows, output_csv)
 
 
 if __name__ == "__main__":
-    DRAW_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/draws"
+    DRAW_URL = "https://www.atptour.com/en/scores/current/indian-wells/404/draws"
 
     BASE_DIR = Path(__file__).resolve().parent
     OUTPUT_CSV = BASE_DIR / "indian_wells_full_draw.csv"
@@ -562,3 +600,4 @@ if __name__ == "__main__":
     print("CSV creato:", OUTPUT_CSV)
     print("File exists:", OUTPUT_CSV.exists())
     print("=== DEBUG END ===")
+
