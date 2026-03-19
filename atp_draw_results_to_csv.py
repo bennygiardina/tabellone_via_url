@@ -376,8 +376,14 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
             participant_b_score="",
         )
 
-    # walkover senza game
-    if (player_a.has_wo or player_b.has_wo) and not player_a.score_values and not player_b.score_values:
+    # walkover senza game:
+    # vale solo se NESSUNO dei due è bye
+    if (
+        player_a.display_name != "bye"
+        and player_b.display_name != "bye"
+        and not player_a.score_values
+        and not player_b.score_values
+    ):
         if player_a.winner_marker and not player_b.winner_marker:
             return MatchRow(
                 round_code=round_code,
@@ -422,8 +428,13 @@ def build_match_row_from_pair(round_code: str, player_a: PlayerRow, player_b: Pl
                 participant_b_score=str(b_sets),
             )
 
-    # Walkover anche senza marker esplicito: se non ci sono punteggi completi ma c'è un winner
-    if (player_a.has_wo or player_b.has_wo) and winner:
+    # Walkover con label esplicita nel testo
+    if (
+        player_a.display_name != "bye"
+        and player_b.display_name != "bye"
+        and (player_a.has_wo or player_b.has_wo)
+        and winner
+    ):
         if winner == player_a.display_name:
             return MatchRow(
                 round_code=round_code,
