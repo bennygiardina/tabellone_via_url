@@ -586,19 +586,19 @@ def build_tournament_csv_up_to_r64(draw_url: str, results_url: str, output_csv: 
     export_csv(all_rows, output_csv)
 
 
+from pathlib import Path
 import os
 
 if __name__ == "__main__":
     DRAW_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/draws"
     RESULTS_URL = "https://www.atptour.com/en/scores/current/indian_wells/404/results"
-    OUTPUT_CSV = "indian_wells_up_to_r64.csv"
 
-    print("=== DEBUG START ===")
+    BASE_DIR = Path(__file__).resolve().parent
+    OUTPUT_CSV = BASE_DIR / "indian_wells_up_to_r64.csv"
+
     print("Working dir:", os.getcwd())
-    print("Script starting...")
+    print("Saving CSV in:", OUTPUT_CSV)
 
-    build_tournament_csv_up_to_r64(DRAW_URL, RESULTS_URL, OUTPUT_CSV)
+    build_tournament_csv_up_to_r64(DRAW_URL, RESULTS_URL, str(OUTPUT_CSV))
 
     print("CSV creato:", OUTPUT_CSV)
-    print("File exists:", os.path.exists(OUTPUT_CSV))
-    print("=== DEBUG END ===")
