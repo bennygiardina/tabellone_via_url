@@ -1,0 +1,54 @@
+name: Update Indian Wells Matches CSV (No PDF)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  update-csv:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Ensure data directory exists
+        run: |
+          mkdir -p data
+
+      - name: Run script (debug)
+        run: |
+          python update_indian_wells_matches_csv_no_pdf.py \
+            --output data/indian_wells_matches.csv \
+            --debug
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: indian-wells-matches
+          path: data/indian_wells_matches.csv
+
+      - name: Commit and push CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/indian_wells_matches.csv
+          git diff --cached --quiet && exit 0
+          git commit -m "Update Indian Wells CSV (no PDF)"
+          git push
