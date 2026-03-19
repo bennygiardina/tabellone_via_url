@@ -325,7 +325,7 @@ def parse_single_result_block(round_key: str, block_lines: list[str]) -> MatchRe
             continue
         if any(line.startswith(prefix) for prefix in IGNORE_PREFIXES):
             if line.startswith("Game Set and Match"):
-                m = re.search(r"Game Set and Match\s+(.+?)\.\s+.+?wins the match\s+(.+?)\s*\.?")
+                m = re.search(r"Game Set and Match\s+(.+?)\.\s+.+?wins the match\s+(.+?)\s*\.?", line)
                 if m:
                     result.winner_raw = m.group(1).strip()
                     result.score_raw = m.group(2).strip()
