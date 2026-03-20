@@ -1,4 +1,4 @@
-name: Generate Monte Carlo 2025 ATP Draw CSV (FIXED)
+name: Generate Monte Carlo 2025 ATP Draw CSV (FIXED v2)
 
 on:
   workflow_dispatch:
@@ -23,9 +23,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Run FIXED script
+      - name: Run FIXED v2 script
         run: |
-          python atp_draw_results_to_csv_monte_carlo_2025_fixed.py
+          python atp_draw_results_to_csv_monte_carlo_2025_fixed_v2.py
 
       - name: Verify CSV exists
         run: |
@@ -45,5 +45,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add monte_carlo_2025_draw.csv
-          git commit -m "Update Monte Carlo 2025 ATP draw CSV (fixed parser)" || echo "No changes"
+          git commit -m "Update Monte Carlo 2025 ATP draw CSV (fixed v2 parser)" || echo "No changes"
           git push
