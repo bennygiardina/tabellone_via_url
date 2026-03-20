@@ -1,0 +1,64 @@
+Round,Player A,Player B,Winner,Participant A score,Participant B score
+R64,A. Zverev [1],bye,A. Zverev [1],,
+R64,M. Navone [Q],M. Berrettini,M. Berrettini,0,2
+R64,J. Lehecka,S. Korda,J. Lehecka,2,0
+R64,Y. Bu [Q],L. Musetti [13],L. Musetti [13],1,2
+R64,H. Rune [10],N. Borges,N. Borges,(rit.) 0,1
+R64,L. Sonego,P. Martinez,P. Martinez,1,2
+R64,J. Thompson,G. Mpetshi Perricard,J. Thompson,2,0
+R64,bye,S. Tsitsipas [6],S. Tsitsipas [6],,
+R64,N. Djokovic [3],bye,N. Djokovic [3],,
+R64,S. Wawrinka [WC],A. Tabilo,A. Tabilo,1,2
+R64,J. Struff,V. Vacherot [WC],V. Vacherot [WC],0,2
+R64,N. Jarry,G. Dimitrov [15],G. Dimitrov [15],0,2
+R64,D. Medvedev [9],K. Khachanov,D. Medvedev [9],2,1
+R64,A. Muller,C. Ugo Carabelli [Q],A. Muller,2,0
+R64,T. Machac,S. Baez,T. Machac,2,1
+R64,bye,A. de Minaur [8],A. de Minaur [8],,
+R64,J. Draper [5],bye,J. Draper [5],,
+R64,M. Giron,D. Shapovalov,M. Giron,2,0
+R64,T. Etcheverry,C. Moutet [Q],T. Etcheverry,2,1
+R64,A. Davidovich Fokina,B. Shelton [11],A. Davidovich Fokina,2,1
+R64,F. Tiafoe [14],M. Kecmanovic,F. Tiafoe [14],2,1
+R64,A. Popyrin,U. Humbert,A. Popyrin,2,1
+R64,R. Bautista Agut,B. Nakashima,R. Bautista Agut,2,0
+R64,bye,C. Ruud [4],C. Ruud [4],,
+R64,A. Rublev [7],bye,A. Rublev [7],,
+R64,G. Monfils,F. Marozsan [Q],G. Monfils,2,1
+R64,D. Lajovic [Q],F. Cobolli,F. Cobolli,0,2
+R64,T. Griekspoor,A. Fils [12],A. Fils [12],1,2
+R64,F. Auger-Aliassime [16],D. Altmaier [Q],D. Altmaier [Q],0,2
+R64,M. Arnaldi,R. Gasquet [WC],R. Gasquet [WC],1,2
+R64,F. Fognini [WC],F. Cerundolo,F. Cerundolo,0,2
+R64,bye,C. Alcaraz [2],C. Alcaraz [2],,
+R32,A. Zverev [1],M. Berrettini,M. Berrettini,1,2
+R32,J. Lehecka,L. Musetti [13],L. Musetti [13],1,2
+R32,N. Borges,P. Martinez,N. Borges,2,1
+R32,J. Thompson,S. Tsitsipas [6],S. Tsitsipas [6],1,2
+R32,N. Djokovic [3],A. Tabilo,A. Tabilo,0,2
+R32,V. Vacherot [WC],G. Dimitrov [15],G. Dimitrov [15],1,2
+R32,D. Medvedev [9],A. Muller,D. Medvedev [9],2,1
+R32,T. Machac,A. de Minaur [8],A. de Minaur [8],1,2
+R32,J. Draper [5],M. Giron,J. Draper [5],2,0
+R32,T. Etcheverry,A. Davidovich Fokina,A. Davidovich Fokina,0,2
+R32,F. Tiafoe [14],A. Popyrin,A. Popyrin,1,2
+R32,R. Bautista Agut,C. Ruud [4],C. Ruud [4],0,2
+R32,A. Rublev [7],G. Monfils,A. Rublev [7],2,0
+R32,F. Cobolli,A. Fils [12],A. Fils [12],0,2
+R32,D. Altmaier [Q],R. Gasquet [WC],D. Altmaier [Q],2,1
+R32,F. Cerundolo,C. Alcaraz [2],C. Alcaraz [2],1,2
+R16,M. Berrettini,L. Musetti [13],L. Musetti [13],0,2
+R16,N. Borges,S. Tsitsipas [6],S. Tsitsipas [6],0,2
+R16,A. Tabilo,G. Dimitrov [15],G. Dimitrov [15],1,2
+R16,D. Medvedev [9],A. de Minaur [8],A. de Minaur [8],0,2
+R16,J. Draper [5],A. Davidovich Fokina,A. Davidovich Fokina,1,2
+R16,A. Popyrin,C. Ruud [4],A. Popyrin,2,1
+R16,A. Rublev [7],A. Fils [12],A. Fils [12],0,2
+R16,D. Altmaier [Q],C. Alcaraz [2],C. Alcaraz [2],0,2
+QF,L. Musetti [13],S. Tsitsipas [6],A. Zverev [1],,
+QF,G. Dimitrov [15],A. de Minaur [8],M. Berrettini,0,2
+QF,A. Davidovich Fokina,A. Popyrin,J. Lehecka,2,0
+QF,A. Fils [12],C. Alcaraz [2],L. Musetti [13],1,2
+SF,A. Zverev [1],M. Berrettini,A. Zverev [1],,
+SF,J. Lehecka,L. Musetti [13],M. Berrettini,0,2
+F,A. Zverev [1],M. Berrettini,L. Musetti [13],2,1
