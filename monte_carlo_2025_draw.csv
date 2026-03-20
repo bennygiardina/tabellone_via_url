@@ -55,10 +55,10 @@ R16,J. Draper [5],A. Davidovich Fokina,A. Davidovich Fokina,1,2
 R16,A. Popyrin,C. Ruud [4],A. Popyrin,2,1
 R16,A. Rublev [7],A. Fils [12],A. Fils [12],0,2
 R16,D. Altmaier [Q],C. Alcaraz [2],C. Alcaraz [2],0,2
-QF,L. Musetti [13],S. Tsitsipas [6],A. Zverev [1],,
-QF,G. Dimitrov [15],A. de Minaur [8],M. Berrettini,0,2
-QF,A. Davidovich Fokina,A. Popyrin,J. Lehecka,2,0
-QF,A. Fils [12],C. Alcaraz [2],L. Musetti [13],1,2
-SF,A. Zverev [1],M. Berrettini,A. Zverev [1],,
-SF,J. Lehecka,L. Musetti [13],M. Berrettini,0,2
-F,A. Zverev [1],M. Berrettini,L. Musetti [13],2,1
+QF,L. Musetti [13],S. Tsitsipas [6],L. Musetti [13],2,1
+QF,G. Dimitrov [15],A. de Minaur [8],A. de Minaur [8],0,2
+QF,A. Davidovich Fokina,A. Popyrin,A. Davidovich Fokina,2,0
+QF,A. Fils [12],C. Alcaraz [2],C. Alcaraz [2],1,2
+SF,L. Musetti [13],A. de Minaur [8],,,
+SF,A. Davidovich Fokina,C. Alcaraz [2],,,
+F,,,L. Musetti [13],2,1
