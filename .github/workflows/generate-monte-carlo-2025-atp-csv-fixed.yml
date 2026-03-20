@@ -1,4 +1,4 @@
-name: Generate Monte Carlo 2025 ATP Draw CSV (FIXED v2)
+name: Generate Monte Carlo 2025 ATP Draw CSV (FIXED v2 + validation)
 
 on:
   workflow_dispatch:
@@ -21,21 +21,48 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 pandas
 
-      - name: Run FIXED v2 script
+      - name: Run script
         run: |
           python atp_draw_results_to_csv_monte_carlo_2025_fixed_v2.py
 
-      - name: Verify CSV exists
+      - name: Validate tournament structure
         run: |
-          if [ ! -f monte_carlo_2025_draw.csv ]; then
-            echo "CSV non trovato!"
-            exit 1
-          fi
+          python - << 'EOF'
+          import pandas as pd
+
+          df = pd.read_csv("monte_carlo_2025_draw.csv")
+
+          qf = df[df["Round"] == "QF"]
+          sf = df[df["Round"] == "SF"]
+          f = df[df["Round"] == "F"]
+
+          qf_winners = set(qf["Winner"].dropna())
+          sf_players = set(sf["Player A"]).union(set(sf["Player B"]))
+
+          sf_winners = set(sf["Winner"].dropna())
+          f_players = set(f["Player A"]).union(set(f["Player B"]))
+
+          errors = []
+
+          if not qf_winners.issubset(sf_players):
+              errors.append("Mismatch: QF winners not matching SF players")
+
+          if not sf_winners.issubset(f_players):
+              errors.append("Mismatch: SF winners not matching Final players")
+
+          if errors:
+              print("VALIDATION FAILED:")
+              for e in errors:
+                  print("-", e)
+              exit(1)
+          else:
+              print("Validation passed ✅")
+          EOF
 
       - name: Upload CSV artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: monte-carlo-2025-atp-draw-csv
           path: monte_carlo_2025_draw.csv
@@ -45,5 +72,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add monte_carlo_2025_draw.csv
-          git commit -m "Update Monte Carlo 2025 ATP draw CSV (fixed v2 parser)" || echo "No changes"
+          git commit -m "Update Monte Carlo 2025 ATP draw CSV (validated)" || echo "No changes"
           git push
