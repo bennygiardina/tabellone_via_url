@@ -585,10 +585,10 @@ def build_full_tournament_csv_from_draw(draw_url: str, output_csv: str) -> None:
 
 
 if __name__ == "__main__":
-    DRAW_URL = "https://www.atptour.com/en/scores/current/indian-wells/404/draws"
+    DRAW_URL = "https://www.atptour.com/en/scores/current/monte-carlo/410/draws"
 
     BASE_DIR = Path(__file__).resolve().parent
-    OUTPUT_CSV = BASE_DIR / "indian_wells_full_draw.csv"
+    OUTPUT_CSV = BASE_DIR / "montecarlo_full_draw.csv"
 
     print("=== DEBUG START ===")
     print("Working dir:", os.getcwd())
